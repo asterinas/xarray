@@ -11,7 +11,7 @@ pub const CHUNK_MASK: usize = CHUNK_SIZE - 1;
 /// The XArray is an abstract data type which behaves like a very large array of items.
 /// Items here must be a 8 bytes object, like pointers or `u64`.
 /// it allows you to sensibly go to the next or previous entry in a cache-efficient manner.
-/// Normal pointers may be stored in the XArray directly. They must be 4-byte aligned
+/// Normal pointers may be stored in the XArray directly. They must be 4-byte aligned.
 ///
 /// # Example
 ///
@@ -50,16 +50,21 @@ impl<I: ItemEntry, M: XMark> XArray<I, M> {
     pub fn load<'a>(&'a self, index: u64) -> Option<I::Target<'a>> {
         let mut cursor = self.cursor(index);
         let entry = cursor.current();
-        unsafe { Some(I::load_item(entry)) }
+        if entry.is_item() {
+            unsafe { Some(I::load_item(entry)) }
+        }
+        else {
+            None
+        }
     }
 
     pub fn store(&mut self, index: u64, value: I) {
         self.cursor_mut(index).store(value);
     }
 
-    // pub fn remove(&mut self, index: u64) {
-    //     self.cursor_mut(index).remove();
-    // }
+    pub fn remove(&mut self, index: u64) {
+        self.cursor_mut(index).remove();
+    }
 
     pub fn cursor<'a>(&'a self, index: u64) -> Cursor<'a, I, M> {
         Cursor {
@@ -105,7 +110,12 @@ impl<'a, I: ItemEntry, M: XMark> CursorMut<'a, I, M> {
 
     pub fn store(&mut self, item: I) {
         let Self { xa, xas } = self;
-        xas.store(xa, OwnedEntry::from_item(item));
+        xas.store(xa, Some(OwnedEntry::from_item(item)));
+    }
+
+    pub fn remove(&mut self) {
+        let Self { xa, xas } = self;
+        xas.store(xa, None);
     }
 
     pub fn key(&mut self) -> u64 {
