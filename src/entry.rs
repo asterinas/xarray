@@ -20,7 +20,7 @@ pub trait PointerItem {
     /// 将一个裸指针转化为原指针
     ///
     /// # Safety
-    /// 裸指针必须是通过into_raw生成得到的，同时需要注意所有权的恢复。
+    /// 裸指针必须是由同类型trait里的into_raw方法生成得到的，需要注意此时所有权的恢复。
     unsafe fn from_raw(ptr: *const u8) -> Self;
 }
 
@@ -58,12 +58,14 @@ pub(crate) trait ItemEntry {
         Self: 'a;
 
     /// 由原类型生成usize，消耗原类型所有权，该usize将直接存入XArray的XEntry。
+    /// 用户需要确保生产的usize符合XArray对item entry的要求，即如果原类型是pointer的话
+    /// 后两位为00，如果原类型是usize之类的value的话末位为1.
     fn into_raw(self) -> usize;
 
     /// 由usize恢复原类型，恢复所有权
     ///
     /// # Safety
-    /// 传入的raw必须是由into_raw生成的
+    /// 传入的raw必须是由同类型trait内对应方法into_raw生成的
     unsafe fn from_raw(raw: usize) -> Self;
 
     /// 读取该类型对应的XEntry，返回用户需要的读取类型
@@ -114,6 +116,10 @@ pub(crate) struct Node {}
 
 /// XArray中有所有权的Entry，只有两种Type，Item以及Node，分别对应ItemEntry以及指向Node的Entry
 /// 指向Node的Entry目前有统一的结构类型，也就是Arc<RwLock<XNode<I>>>。
+/// OwnedEntry目前只会在三种情况下生成:
+/// - store时由传入的item生成
+/// - 创建新的Node节点时生成
+/// - replace XArray上的XEntry时，将XEntry恢复成原来的OwnedEntry (该XEntry是由OwnedEntry生成的)
 #[derive(Eq)]
 #[repr(transparent)]
 pub struct OwnedEntry<I: ItemEntry, Type> {

@@ -1,11 +1,10 @@
 #![feature(pointer_is_aligned)]
 use core::prelude::v1;
-use std::sync::Arc;
-
 use entry::*;
 use mark::*;
 use node::*;
 use state::*;
+use std::sync::Arc;
 use xarray::*;
 
 mod entry;
@@ -37,6 +36,9 @@ fn main() {
     xarray_usize.store(8, 100);
     let v1 = xarray_usize.load(100);
     println!("load usize: {:?}", v1);
+    let v2 = xarray_usize.load(8);
+    println!("load usize: {:?}", v2);
+    xarray_usize.remove(8);
     let v2 = xarray_usize.load(8);
     println!("load usize: {:?}", v2);
 }

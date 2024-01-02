@@ -112,17 +112,16 @@ impl<I: ItemEntry, M: XMark> State<I, M> {
     pub fn store(
         &mut self,
         xa: &mut XArray<I, M>,
-        entry: OwnedEntry<I, Item>,
+        entry: Option<OwnedEntry<I, Item>>,
     ) -> Option<OwnedEntry<I, Item>> {
         let op_entry = self.create(xa);
         // TODO: Multi-index entry
-        if *op_entry == entry {
-            return Some(entry);
+        if entry.as_ref().is_some_and(|entry| *op_entry == *entry) {
+            return entry;
         }
         let node = self.node.get().unwrap();
         let mut node_write = node.write().unwrap();
         let old_entry = node_write.set_item_entry(self.offset, entry);
-        let k = node_write.entry(self.offset);
         return old_entry;
     }
 

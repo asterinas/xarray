@@ -61,10 +61,14 @@ impl<I: ItemEntry> XNode<I> {
     pub(crate) fn set_item_entry(
         &mut self,
         offset: u8,
-        entry: OwnedEntry<I, Item>,
+        entry: Option<OwnedEntry<I, Item>>,
     ) -> Option<OwnedEntry<I, Item>> {
         let old_entry = OwnedEntry::<I, Item>::from_raw(self.slots[offset as usize]);
-        self.slots[offset as usize] = OwnedEntry::<I, Item>::into_raw(entry);
+        let new_entry = entry
+            .map(|entry| OwnedEntry::<I, Item>::into_raw(entry))
+            .unwrap_or(XEntry::EMPTY);
+        self.slots[offset as usize] = new_entry;
+
         old_entry
     }
 
