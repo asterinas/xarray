@@ -1,161 +1,72 @@
-use std::{
-    marker::PhantomData,
-    mem::{self, ManuallyDrop, MaybeUninit},
-    sync::{Arc, RwLock},
-};
+use core::{marker::PhantomData, mem::ManuallyDrop, ptr::NonNull};
+use std::sync::{Arc, Mutex};
 
 use crate::*;
 
-/// 用来抽象用户将要存入XArray的指针类型
-/// 可以为诸如Arc、Box等实现，用户也可以自己为自定义的指针类型实现该trait
-pub trait PointerItem {
-    /// 将原有的指针类型转化为一个裸指针
+/// A trait that should be implemented for the types users wish to store in an `XArray`.
+/// Items stored in an XArray are required to be 4 bytes in size, Currently it can be various pointer types.
+pub trait ItemEntry {
+    /// Converts the original type into a `usize`, consuming the ownership of the original type.
     ///
-    /// # Safety
-    /// 用户需要确保该裸指针与原指针在内存布局上一致
-    /// 也就是原指针大小跟裸指针大小一致，且指向的位置一致
-    /// 同时需要确保原指针是aligned to 4的，因为XArray中的entry后两位要用于entry类型判断。
-    unsafe fn into_raw(self) -> *const u8;
-
-    /// 将一个裸指针转化为原指针
-    ///
-    /// # Safety
-    /// 裸指针必须是由同类型trait里的into_raw方法生成得到的，需要注意此时所有权的恢复。
-    unsafe fn from_raw(ptr: *const u8) -> Self;
-}
-
-impl<T> PointerItem for Box<T> {
-    unsafe fn into_raw(self) -> *const u8 {
-        let raw_ptr = Box::into_raw(self) as *const u8;
-        debug_assert!(raw_ptr.is_aligned_to(4));
-        raw_ptr
-    }
-
-    unsafe fn from_raw(ptr: *const u8) -> Self {
-        Box::from_raw(ptr as *mut _)
-    }
-}
-
-impl<T> PointerItem for Arc<T> {
-    unsafe fn into_raw(self) -> *const u8 {
-        let raw_ptr = unsafe { core::intrinsics::transmute::<Arc<T>, *const u8>(self) };
-        debug_assert!(raw_ptr.is_aligned_to(4));
-        raw_ptr
-    }
-
-    unsafe fn from_raw(ptr: *const u8) -> Self {
-        let arc = core::intrinsics::transmute::<*const u8, Arc<T>>(ptr);
-        arc
-    }
-}
-
-/// 用来抽象用户将要存入XArray的类型，这些存入XArray的obj称之为item。
-/// 对于存入的item，要求其大小为4字节，可以是各种指针类型或者是usize、u64等整数类型。
-pub(crate) trait ItemEntry {
-    /// 用户读取存储Item时的返回类型
-    type Target<'a>
-    where
-        Self: 'a;
-
-    /// 由原类型生成usize，消耗原类型所有权，该usize将直接存入XArray的XEntry。
-    /// 用户需要确保生产的usize符合XArray对item entry的要求，即如果原类型是pointer的话
-    /// 后两位为00，如果原类型是usize之类的value的话末位为1.
+    /// This `usize` should be directly stored in an XArray's XEntry. Users must ensure that the
+    /// produced `usize` meets the requirements for an item entry in the XArray. Specifically,
+    /// if the original type is a pointer, the last two bits should be 00; if the original
+    /// type is a value like usize, the last bit should be 1 (TODO).
     fn into_raw(self) -> usize;
 
-    /// 由usize恢复原类型，恢复所有权
+    /// Recovers the original type from a usize, reclaiming ownership.
     ///
     /// # Safety
-    /// 传入的raw必须是由同类型trait内对应方法into_raw生成的
+    /// The raw value passed must have been produced by the corresponding `into_raw` method in this trait
+    /// from the same type.
     unsafe fn from_raw(raw: usize) -> Self;
-
-    /// 读取该类型对应的XEntry，返回用户需要的读取类型
-    ///
-    /// # Safety
-    /// 需要确保entry是一个item_entry，同时需要确保原类型仍有效
-    unsafe fn load_item<'a>(entry: &'a XEntry) -> Self::Target<'a>;
 }
 
-impl<I: PointerItem> ItemEntry for I {
-    type Target<'a> = &'a Self where Self: 'a;
-
+impl<T> ItemEntry for Arc<T> {
     fn into_raw(self) -> usize {
-        let raw_ptr = unsafe { I::into_raw(self) };
+        let raw_ptr = unsafe { core::intrinsics::transmute::<Arc<T>, *const u8>(self) };
+        debug_assert!(raw_ptr.is_aligned_to(4));
         raw_ptr as usize
     }
 
     unsafe fn from_raw(raw: usize) -> Self {
-        I::from_raw(raw as *const u8)
-    }
-
-    unsafe fn load_item<'a>(entry: &'a XEntry) -> Self::Target<'a> {
-        debug_assert!(entry.is_item());
-        &*(entry as *const XEntry as *const I)
+        let arc = core::intrinsics::transmute::<usize, Arc<T>>(raw);
+        arc
     }
 }
 
-impl ItemEntry for usize {
-    type Target<'a> = usize;
-
+impl<T> ItemEntry for Box<T> {
     fn into_raw(self) -> usize {
-        debug_assert!(self <= usize::MAX >> 1);
-        (self << 1) | 1
+        let raw_ptr = Box::into_raw(self) as *const u8;
+        debug_assert!(raw_ptr.is_aligned_to(4));
+        raw_ptr as usize
     }
 
     unsafe fn from_raw(raw: usize) -> Self {
-        raw >> 1
-    }
-
-    unsafe fn load_item<'a>(entry: &'a XEntry) -> Self::Target<'a> {
-        Self::from_raw(entry.raw)
+        Box::from_raw(raw as *mut _)
     }
 }
 
-pub(crate) struct Item {}
-
-pub(crate) struct Node {}
-
-/// XArray中有所有权的Entry，只有两种Type，Item以及Node，分别对应ItemEntry以及指向Node的Entry
-/// 指向Node的Entry目前有统一的结构类型，也就是Arc<RwLock<XNode<I>>>。
-/// OwnedEntry目前只会在三种情况下生成:
-/// - store时由传入的item生成
-/// - 创建新的Node节点时生成
-/// - replace XArray上的XEntry时，将XEntry恢复成原来的OwnedEntry (该XEntry是由OwnedEntry生成的)
-#[derive(Eq)]
-#[repr(transparent)]
-pub struct OwnedEntry<I: ItemEntry, Type> {
+/// The type stored in the head of `XArray` and the slots of `XNode`s, which is the basic unit of storage within an XArray.
+/// There are the following types of `XEntry`:
+/// - Internal entries: These are invisible to users and have the last two bits set to 10. Currently `XArray` only have node
+/// entries as internal entries, which are entries that point to XNodes.
+/// - Item entries: Items stored by the user. Currently stored items can only be pointers and the last two bits
+/// of these item entries are 00.
+///
+/// `XEntry` have the ownership. Once it generated from an item or a XNode, the ownership of the item or the XNode
+/// will be transferred to the `XEntry`. If the stored item in the XArray implemented Clone trait, then the XEntry
+/// in the XArray can also implement Clone trait.
+#[derive(Eq, Debug)]
+pub(crate) struct XEntry<I>
+where
+    I: ItemEntry,
+{
     raw: usize,
-    _marker: core::marker::PhantomData<(I, Type)>,
+    _marker: core::marker::PhantomData<I>,
 }
 
-impl<I: ItemEntry, Type> PartialEq for OwnedEntry<I, Type> {
-    fn eq(&self, o: &Self) -> bool {
-        self.raw == o.raw
-    }
-}
-
-impl<I: ItemEntry + Clone> Clone for OwnedEntry<I, Item> {
-    fn clone(&self) -> Self {
-        let cloned_entry = unsafe {
-            let item_entry = ManuallyDrop::new(I::from_raw(self.raw));
-            OwnedEntry::from_item((*item_entry).clone())
-        };
-        return cloned_entry;
-    }
-}
-
-impl<I: ItemEntry> Clone for OwnedEntry<I, Node> {
-    fn clone(&self) -> Self {
-        unsafe {
-            Arc::increment_strong_count((self.raw - 2) as *const RwLock<XNode<I>>);
-        }
-        Self {
-            raw: self.raw,
-            _marker: core::marker::PhantomData,
-        }
-    }
-}
-
-impl<I: ItemEntry, Type> Drop for OwnedEntry<I, Type> {
+impl<I: ItemEntry> Drop for XEntry<I> {
     fn drop(&mut self) {
         if self.is_item() {
             unsafe {
@@ -164,156 +75,97 @@ impl<I: ItemEntry, Type> Drop for OwnedEntry<I, Type> {
         }
         if self.is_node() {
             unsafe {
-                Arc::from_raw((self.raw - 2) as *const RwLock<XNode<I>>);
+                Arc::from_raw((self.raw - 2) as *const XNode<I>);
             }
         }
     }
 }
 
-impl<I: ItemEntry> OwnedEntry<I, Item> {
-    pub(crate) fn into_raw(self) -> XEntry {
-        let raw_entry = XEntry { raw: self.raw };
-        let _ = ManuallyDrop::new(self);
-        raw_entry
+impl<I: ItemEntry + Clone> Clone for XEntry<I> {
+    fn clone(&self) -> Self {
+        if self.is_item() {
+            let cloned_entry = unsafe {
+                let item_entry = ManuallyDrop::new(I::from_raw(self.raw));
+                XEntry::from_item((*item_entry).clone())
+            };
+            cloned_entry
+        } else {
+            if self.is_node() {
+                unsafe {
+                    Arc::increment_strong_count((self.raw - 2) as *const Mutex<XNode<I>>);
+                }
+            }
+            Self {
+                raw: self.raw,
+                _marker: core::marker::PhantomData,
+            }
+        }
+    }
+}
+
+impl<I: ItemEntry> PartialEq for XEntry<I> {
+    fn eq(&self, o: &Self) -> bool {
+        self.raw == o.raw
+    }
+}
+
+impl<I: ItemEntry> XEntry<I> {
+    pub(crate) fn raw(&self) -> usize {
+        self.raw
     }
 
-    pub(crate) fn from_raw(raw_entry: XEntry) -> Option<Self> {
-        if raw_entry.is_item() {
-            Some(Self {
-                raw: raw_entry.raw,
-                _marker: PhantomData,
-            })
-        } else {
-            None
+    pub(crate) const EMPTY: Self = Self::new(0);
+
+    pub(crate) const fn new(raw: usize) -> Self {
+        Self {
+            raw,
+            _marker: PhantomData,
         }
+    }
+
+    pub(crate) fn is_null(&self) -> bool {
+        self.raw == 0
+    }
+
+    pub(crate) fn is_internal(&self) -> bool {
+        self.raw & 3 == 2
+    }
+
+    pub(crate) fn is_item(&self) -> bool {
+        !self.is_null() && !self.is_internal()
+    }
+
+    pub(crate) fn is_node(&self) -> bool {
+        self.is_internal() && self.raw > (SLOT_SIZE << 2)
     }
 
     pub(crate) fn from_item(item: I) -> Self {
         let raw = I::into_raw(item);
         Self::new(raw as usize)
     }
-}
 
-impl<I: ItemEntry> OwnedEntry<I, Node> {
-    pub(crate) fn into_raw(self) -> XEntry {
-        let raw_entry = XEntry { raw: self.raw };
-        let _ = ManuallyDrop::new(self);
-        raw_entry
-    }
-
-    pub(crate) fn from_raw(raw_entry: XEntry) -> Option<Self> {
-        if raw_entry.is_node() {
-            Some(Self {
-                raw: raw_entry.raw,
-                _marker: PhantomData,
-            })
+    pub(crate) fn into_item(self) -> Option<I> {
+        if self.is_item() {
+            let item = unsafe { I::from_raw(self.raw) };
+            let _ = ManuallyDrop::new(self);
+            Some(item)
         } else {
             None
         }
     }
 
-    pub(crate) fn from_node(node: XNode<I>) -> Self {
+    pub(crate) fn from_node<Operation>(node: XNode<I, Operation>) -> Self {
         let node_ptr = {
-            let arc_node = Arc::new(RwLock::new(node));
+            let arc_node = Arc::new(node);
             Arc::into_raw(arc_node)
         };
         Self::new(node_ptr as usize | 2)
     }
 
-    pub(crate) fn as_node(&self) -> &RwLock<XNode<I>> {
-        unsafe {
-            let node_ref = &*((self.raw - 2) as *const RwLock<XNode<I>>);
-            node_ref
-        }
-    }
-}
-
-impl<I: ItemEntry, Type> OwnedEntry<I, Type> {
-    pub(crate) const fn new(raw: usize) -> Self {
-        Self {
-            raw,
-            _marker: core::marker::PhantomData,
-        }
-    }
-
-    pub(crate) fn is_null(&self) -> bool {
-        self.raw == 0
-    }
-
-    pub(crate) fn is_internal(&self) -> bool {
-        self.raw & 3 == 2
-    }
-
-    pub(crate) fn is_item(&self) -> bool {
-        !self.is_null() && !self.is_internal()
-    }
-
-    pub(crate) fn is_node(&self) -> bool {
-        self.is_internal() && self.raw > (CHUNK_SIZE << 2)
-    }
-}
-
-/// 储存在XArray的head以及XNode的slots中的类型，XArray中存储的基本单位
-/// 有以下这样的类型分类
-/// - internal entries 用户不可见的内部entries 后两位bit为10
-///     - node entry 指向XNode的entry
-///     - sibling entry (用于multi-index entries), empty entry, retry entry (用于异常处理)
-/// - item entry 用户存储的item
-///     - pointer entry 后两位为00, (tagged pointer entry)
-///     - value entry 末位为1
-///
-/// XEntry没有所有权，可以copy，
-/// 指向XNode和表示Item的涉及到所有权的XEntry必须要由OwnedEntry调用into_raw获取，
-/// 这个操作只会发生在XArray的set_head以及XNode的set_slot过程中，
-/// 一获得XEntry就会将其存储在head或slot里，并将旧的XEntry恢复成OwnedEntry。
-/// 此操作相当于将OwnedEntry的所有权转移到了XArray和XNode上，
-/// 二者的drop期间需要负责将这些XEntry恢复成OwnedEntry
-///
-/// XArray和XNode的clone也要负责实际的OwnedEntry的clone
-///
-#[derive(Eq, Copy, Clone)]
-#[repr(transparent)]
-pub struct XEntry {
-    raw: usize,
-}
-
-impl PartialEq for XEntry {
-    fn eq(&self, o: &Self) -> bool {
-        self.raw == o.raw
-    }
-}
-
-impl XEntry {
-    pub(crate) const EMPTY: Self = Self::new(0);
-
-    pub(crate) const fn new(raw: usize) -> Self {
-        Self { raw }
-    }
-
-    pub(crate) fn is_null(&self) -> bool {
-        self.raw == 0
-    }
-
-    pub(crate) fn is_internal(&self) -> bool {
-        self.raw & 3 == 2
-    }
-
-    pub(crate) fn is_item(&self) -> bool {
-        !self.is_null() && !self.is_internal()
-    }
-
-    pub(crate) fn is_node(&self) -> bool {
-        self.is_internal() && self.raw > (CHUNK_SIZE << 2)
-    }
-
-    pub(crate) fn is_sibling(&self) -> bool {
-        self.is_internal() && self.raw < (((CHUNK_SIZE - 1) << 2) | 2)
-    }
-
-    pub(crate) fn as_node<I: ItemEntry>(&self) -> Option<&RwLock<XNode<I>>> {
+    pub(crate) fn as_node(&self) -> Option<&XNode<I>> {
         if self.is_node() {
             unsafe {
-                let node_ref = &*((self.raw - 2) as *const RwLock<XNode<I>>);
+                let node_ref = &*((self.raw - 2) as *const XNode<I>);
                 Some(node_ref)
             }
         } else {
@@ -321,17 +173,64 @@ impl XEntry {
         }
     }
 
-    pub(crate) fn as_sibling(&self) -> Option<u8> {
-        if self.is_sibling() {
-            Some((self.raw >> 2).try_into().unwrap())
+    pub(crate) fn as_node_mut<'a>(&self) -> Option<&'a XNode<I, ReadWrite>> {
+        if self.is_node() {
+            unsafe {
+                let node_ref = &*((self.raw - 2) as *const XNode<I, ReadWrite>);
+                Some(node_ref)
+            }
+        } else {
+            None
+        }
+    }
+
+    pub(crate) fn node_strong_count(&self) -> Option<usize> {
+        if self.is_node() {
+            let raw_ptr = (self.raw - 2) as *const u8;
+            unsafe {
+                let arc = Arc::from_raw(raw_ptr);
+                let strong_count = Arc::strong_count(&arc);
+                let _ = ManuallyDrop::new(arc);
+                Some(strong_count)
+            }
         } else {
             None
         }
     }
 }
 
-impl<I: ItemEntry, Type> PartialEq<OwnedEntry<I, Type>> for XEntry {
-    fn eq(&self, o: &OwnedEntry<I, Type>) -> bool {
-        self.raw == o.raw
+/// An immutable reference to an `XEntry` stored in the `head` of `XArray` or the slots of `XNode` with a lifetime `'a`.
+///
+/// It can be used as `&'a XEntry` during the `'a` lifetime through `as_entry()` method.  
+pub(crate) struct RefEntry<'a, I>
+where
+    I: ItemEntry,
+{
+    ref_ptr: NonNull<XEntry<I>>,
+    _marker: &'a (),
+}
+
+impl<'a, I: ItemEntry> RefEntry<'a, I> {
+    /// Create a `RefEntry` from an input `entry`. The lifetime of `entry` may be shorter than `'a`
+    /// since the `entry` may reference to a lock guard.
+    pub(crate) fn new(entry: &XEntry<I>) -> Self {
+        Self {
+            ref_ptr: NonNull::new(entry as *const XEntry<I> as *mut XEntry<I>).unwrap(),
+            _marker: &(),
+        }
+    }
+
+    /// Return as an `&'a XEntry`.
+    ///
+    /// # Safety
+    /// Ensure that during the lifetime of the `&'a XEntry`, no one modifies the referenced content.
+    pub(crate) unsafe fn as_entry(&self) -> &'a XEntry<I> {
+        &*self.ref_ptr.as_ptr()
     }
 }
+
+unsafe impl<I: ItemEntry + Sync> Sync for XEntry<I> {}
+unsafe impl<I: ItemEntry + Send> Send for XEntry<I> {}
+
+unsafe impl<'a, I: ItemEntry + Sync> Sync for RefEntry<'a, I> {}
+unsafe impl<'a, I: ItemEntry + Send> Send for RefEntry<'a, I> {}
