@@ -1,4 +1,6 @@
+#[cfg(test)]
 use super::*;
+#[cfg(test)]
 use std::sync::Arc;
 
 #[test]
@@ -29,26 +31,80 @@ fn test_remove() {
 }
 
 #[test]
+fn test_mark() {
+    #[derive(Clone, Copy)]
+    enum MarkDemo {
+        Mark0,
+        Mark1,
+        Mark2,
+    }
+
+    impl ValidMark for MarkDemo {
+        fn index_raw(&self) -> usize {
+            match self {
+                Self::Mark0 => 0,
+                Self::Mark1 => 1,
+                Self::Mark2 => 2,
+            }
+        }
+    }
+
+    let mut xarray_arc: XArray<Arc<i32>, MarkDemo> = XArray::new();
+    for i in 1..10000 {
+        let value = Arc::new(i * 2);
+        xarray_arc.store(i as u64, value);
+    }
+    xarray_arc.set_mark(1000, MarkDemo::Mark0).unwrap();
+    xarray_arc.set_mark(1000, MarkDemo::Mark1).unwrap();
+    xarray_arc.set_mark(2000, MarkDemo::Mark1).unwrap();
+    let (value1, value1_mark0) = xarray_arc.load_with_mark(1000, MarkDemo::Mark0).unwrap();
+    let (_, value1_mark1) = xarray_arc.load_with_mark(1000, MarkDemo::Mark1).unwrap();
+    let (value2, value2_mark1) = xarray_arc.load_with_mark(2000, MarkDemo::Mark1).unwrap();
+    let (_, value2_mark0) = xarray_arc.load_with_mark(2000, MarkDemo::Mark0).unwrap();
+    let (value3, value3_mark1) = xarray_arc.load_with_mark(3000, MarkDemo::Mark1).unwrap();
+    assert!(*value1.as_ref() == 2000);
+    assert!(*value2.as_ref() == 4000);
+    assert!(*value3.as_ref() == 6000);
+    assert!(value1_mark0 == true);
+    assert!(value1_mark1 == true);
+    assert!(value2_mark0 == false);
+    assert!(value2_mark1 == true);
+    assert!(value3_mark1 == false);
+    assert!(Err(()) == xarray_arc.set_mark(20000, MarkDemo::Mark1));
+
+    xarray_arc.unset_mark(1000, MarkDemo::Mark0).unwrap();
+    xarray_arc.unset_mark(1000, MarkDemo::Mark2).unwrap();
+    let (_, value1_mark0) = xarray_arc.load_with_mark(1000, MarkDemo::Mark0).unwrap();
+    let (_, value1_mark2) = xarray_arc.load_with_mark(1000, MarkDemo::Mark2).unwrap();
+    assert!(value1_mark0 == false);
+    assert!(value1_mark2 == false);
+    assert!(Err(()) == xarray_arc.unset_mark(20000, MarkDemo::Mark1));
+
+    xarray_arc.unset_mark_all(MarkDemo::Mark1);
+    let (_, value2_mark1) = xarray_arc.load_with_mark(2000, MarkDemo::Mark1).unwrap();
+    assert!(value2_mark1 == false);
+}
+
+#[test]
 fn test_cow() {
-    static mut INIT_COUNT: usize = 0;
-    static mut DROP_COUNT: usize = 0;
+    use std::sync::atomic::AtomicU64;
+    use std::sync::atomic::Ordering;
+
+    static INIT_TIMES: AtomicU64 = AtomicU64::new(0);
+    static DROP_TIMES: AtomicU64 = AtomicU64::new(0);
     struct Wrapper {
         raw: usize,
     }
 
     impl Drop for Wrapper {
         fn drop(&mut self) {
-            unsafe {
-                DROP_COUNT += 1;
-            }
+            DROP_TIMES.fetch_add(1, Ordering::Relaxed);
         }
     }
 
     impl Wrapper {
         fn new(raw: usize) -> Self {
-            unsafe {
-                INIT_COUNT += 1;
-            }
+            INIT_TIMES.fetch_add(1, Ordering::Relaxed);
             Self { raw }
         }
     }
@@ -82,7 +138,52 @@ fn test_cow() {
     }
     drop(xarray_arc);
     drop(xarray_clone);
-    unsafe {
-        assert!(INIT_COUNT == DROP_COUNT);
+    assert!(INIT_TIMES.load(Ordering::Relaxed) == DROP_TIMES.load(Ordering::Relaxed));
+}
+
+#[test]
+fn test_cow_mark() {
+    #[derive(Clone, Copy)]
+    enum MarkDemo {
+        Mark0,
+        Mark1,
     }
+
+    impl ValidMark for MarkDemo {
+        fn index_raw(&self) -> usize {
+            match self {
+                Self::Mark0 => 0,
+                Self::Mark1 => 1,
+            }
+        }
+    }
+
+    let mut xarray_arc: XArray<Arc<i32>, MarkDemo> = XArray::new();
+    for i in 1..10000 {
+        let value = Arc::new(i * 2);
+        xarray_arc.store(i as u64, value);
+    }
+    let mut xarray_clone = xarray_arc.clone();
+    xarray_arc.set_mark(1000, MarkDemo::Mark0).unwrap();
+    xarray_arc.set_mark(2000, MarkDemo::Mark0).unwrap();
+    xarray_clone.set_mark(1000, MarkDemo::Mark1).unwrap();
+    xarray_arc.set_mark(3000, MarkDemo::Mark0).unwrap();
+
+    let (_, mark0_1000_arc) = xarray_arc.load_with_mark(1000, MarkDemo::Mark0).unwrap();
+    let (_, mark0_2000_arc) = xarray_arc.load_with_mark(2000, MarkDemo::Mark0).unwrap();
+    let (_, mark1_1000_arc) = xarray_arc.load_with_mark(1000, MarkDemo::Mark1).unwrap();
+    let (_, mark0_1000_clone) = xarray_clone.load_with_mark(1000, MarkDemo::Mark0).unwrap();
+    let (_, mark0_2000_clone) = xarray_clone.load_with_mark(2000, MarkDemo::Mark0).unwrap();
+    let (_, mark1_1000_clone) = xarray_clone.load_with_mark(1000, MarkDemo::Mark1).unwrap();
+    let (_, mark0_3000_arc) = xarray_arc.load_with_mark(3000, MarkDemo::Mark0).unwrap();
+    let (_, mark0_3000_clone) = xarray_clone.load_with_mark(3000, MarkDemo::Mark0).unwrap();
+
+    assert!(mark0_1000_arc == true);
+    assert!(mark0_2000_arc == true);
+    assert!(mark1_1000_arc == false);
+    assert!(mark0_1000_clone == false);
+    assert!(mark0_2000_clone == false);
+    assert!(mark1_1000_clone == true);
+    assert!(mark0_3000_arc == true);
+    assert!(mark0_3000_clone == false);
 }

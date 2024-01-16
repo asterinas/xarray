@@ -5,12 +5,14 @@
 use cow::*;
 use cursor::*;
 use entry::*;
+use mark::*;
 use node::*;
 pub use xarray::*;
 
 mod cow;
 mod cursor;
 mod entry;
+mod mark;
 mod node;
 mod xarray;
 
