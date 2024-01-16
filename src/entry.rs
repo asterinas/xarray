@@ -1,17 +1,19 @@
-use core::{marker::PhantomData, mem::ManuallyDrop, ptr::NonNull};
-use std::sync::{Arc, Mutex};
+use core::marker::PhantomData;
+use std::{mem::ManuallyDrop, sync::Arc};
 
 use crate::*;
 
 /// A trait that should be implemented for the types users wish to store in an `XArray`.
-/// Items stored in an XArray are required to be 4 bytes in size, Currently it can be various pointer types.
-pub trait ItemEntry {
+/// Items stored in an XArray are required to be 8 bytes in size, Currently it can be various pointer types.
+///
+/// # Safety
+/// Users must ensure that the produced `usize` of `into_raw()` meets the requirements for an item entry in the XArray. Specifically,
+/// if the original type is a pointer, the last two bits should be 00; if the original
+/// type is a value like usize, the last bit should be 1 (TODO).
+pub unsafe trait ItemEntry {
     /// Converts the original type into a `usize`, consuming the ownership of the original type.
     ///
-    /// This `usize` should be directly stored in an XArray's XEntry. Users must ensure that the
-    /// produced `usize` meets the requirements for an item entry in the XArray. Specifically,
-    /// if the original type is a pointer, the last two bits should be 00; if the original
-    /// type is a value like usize, the last bit should be 1 (TODO).
+    /// This `usize` should be directly stored in an XArray's XEntry.
     fn into_raw(self) -> usize;
 
     /// Recovers the original type from a usize, reclaiming ownership.
@@ -22,7 +24,7 @@ pub trait ItemEntry {
     unsafe fn from_raw(raw: usize) -> Self;
 }
 
-impl<T> ItemEntry for Arc<T> {
+unsafe impl<T> ItemEntry for Arc<T> {
     fn into_raw(self) -> usize {
         let raw_ptr = unsafe { core::intrinsics::transmute::<Arc<T>, *const u8>(self) };
         debug_assert!(raw_ptr.is_aligned_to(4));
@@ -35,7 +37,7 @@ impl<T> ItemEntry for Arc<T> {
     }
 }
 
-impl<T> ItemEntry for Box<T> {
+unsafe impl<T> ItemEntry for Box<T> {
     fn into_raw(self) -> usize {
         let raw_ptr = Box::into_raw(self) as *const u8;
         debug_assert!(raw_ptr.is_aligned_to(4));
@@ -92,7 +94,7 @@ impl<I: ItemEntry + Clone> Clone for XEntry<I> {
         } else {
             if self.is_node() {
                 unsafe {
-                    Arc::increment_strong_count((self.raw - 2) as *const Mutex<XNode<I>>);
+                    Arc::increment_strong_count((self.raw - 2) as *const XNode<I>);
                 }
             }
             Self {
@@ -114,9 +116,9 @@ impl<I: ItemEntry> XEntry<I> {
         self.raw
     }
 
-    pub(crate) const EMPTY: Self = Self::new(0);
+    pub(crate) const EMPTY: Self = unsafe { Self::new(0) };
 
-    pub(crate) const fn new(raw: usize) -> Self {
+    pub(crate) const unsafe fn new(raw: usize) -> Self {
         Self {
             raw,
             _marker: PhantomData,
@@ -141,13 +143,13 @@ impl<I: ItemEntry> XEntry<I> {
 
     pub(crate) fn from_item(item: I) -> Self {
         let raw = I::into_raw(item);
-        Self::new(raw as usize)
+        unsafe { Self::new(raw as usize) }
     }
 
     pub(crate) fn into_item(self) -> Option<I> {
         if self.is_item() {
             let item = unsafe { I::from_raw(self.raw) };
-            let _ = ManuallyDrop::new(self);
+            core::mem::forget(self);
             Some(item)
         } else {
             None
@@ -159,7 +161,7 @@ impl<I: ItemEntry> XEntry<I> {
             let arc_node = Arc::new(node);
             Arc::into_raw(arc_node)
         };
-        Self::new(node_ptr as usize | 2)
+        unsafe { Self::new(node_ptr as usize | 2) }
     }
 
     pub(crate) fn as_node(&self) -> Option<&XNode<I>> {
@@ -190,7 +192,7 @@ impl<I: ItemEntry> XEntry<I> {
             unsafe {
                 let arc = Arc::from_raw(raw_ptr);
                 let strong_count = Arc::strong_count(&arc);
-                let _ = ManuallyDrop::new(arc);
+                core::mem::forget(arc);
                 Some(strong_count)
             }
         } else {
@@ -199,38 +201,5 @@ impl<I: ItemEntry> XEntry<I> {
     }
 }
 
-/// An immutable reference to an `XEntry` stored in the `head` of `XArray` or the slots of `XNode` with a lifetime `'a`.
-///
-/// It can be used as `&'a XEntry` during the `'a` lifetime through `as_entry()` method.  
-pub(crate) struct RefEntry<'a, I>
-where
-    I: ItemEntry,
-{
-    ref_ptr: NonNull<XEntry<I>>,
-    _marker: &'a (),
-}
-
-impl<'a, I: ItemEntry> RefEntry<'a, I> {
-    /// Create a `RefEntry` from an input `entry`. The lifetime of `entry` may be shorter than `'a`
-    /// since the `entry` may reference to a lock guard.
-    pub(crate) fn new(entry: &XEntry<I>) -> Self {
-        Self {
-            ref_ptr: NonNull::new(entry as *const XEntry<I> as *mut XEntry<I>).unwrap(),
-            _marker: &(),
-        }
-    }
-
-    /// Return as an `&'a XEntry`.
-    ///
-    /// # Safety
-    /// Ensure that during the lifetime of the `&'a XEntry`, no one modifies the referenced content.
-    pub(crate) unsafe fn as_entry(&self) -> &'a XEntry<I> {
-        &*self.ref_ptr.as_ptr()
-    }
-}
-
 unsafe impl<I: ItemEntry + Sync> Sync for XEntry<I> {}
 unsafe impl<I: ItemEntry + Send> Send for XEntry<I> {}
-
-unsafe impl<'a, I: ItemEntry + Sync> Sync for RefEntry<'a, I> {}
-unsafe impl<'a, I: ItemEntry + Send> Send for RefEntry<'a, I> {}
