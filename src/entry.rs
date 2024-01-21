@@ -1,7 +1,7 @@
 use core::marker::PhantomData;
 use std::{mem::ManuallyDrop, sync::Arc};
 
-use crate::*;
+use super::*;
 
 /// A trait that should be implemented for the types users wish to store in an `XArray`.
 /// Items stored in an XArray are required to be 8 bytes in size, Currently it can be various pointer types.

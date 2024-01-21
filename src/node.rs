@@ -2,10 +2,10 @@ use core::cmp::Ordering;
 use std::{
     marker::PhantomData,
     ops::{Deref, DerefMut},
-    sync::{Arc, Mutex, Weak},
+    sync::Mutex,
 };
 
-use crate::*;
+use super::*;
 
 pub(crate) struct ReadOnly {}
 pub(crate) struct ReadWrite {}
@@ -86,17 +86,16 @@ pub(crate) struct XNode<I: ItemEntry, Operation = ReadOnly> {
 }
 
 pub(crate) struct XNodeInner<I: ItemEntry> {
-    parent: Option<Weak<XNode<I, ReadWrite>>>,
     slots: [XEntry<I>; SLOT_SIZE],
     marks: [Mark; 3],
 }
 
 impl<I: ItemEntry, Operation> XNode<I, Operation> {
-    pub(crate) fn new(layer: Layer, offset: u8, parent: Option<Weak<XNode<I, ReadWrite>>>) -> Self {
+    pub(crate) fn new(layer: Layer, offset: u8) -> Self {
         Self {
             layer,
             offset_in_parent: offset,
-            inner: Mutex::new(XNodeInner::new(parent)),
+            inner: Mutex::new(XNodeInner::new()),
             _marker: PhantomData,
         }
     }
@@ -128,46 +127,41 @@ impl<I: ItemEntry, Operation> XNode<I, Operation> {
 }
 
 impl<I: ItemEntry> XNode<I, ReadOnly> {
-    pub(crate) fn parent(&self) -> Option<&XNode<I, ReadOnly>> {
-        self.inner
-            .lock()
-            .unwrap()
-            .parent
-            .as_ref()
-            .map(|parent| unsafe { &*(parent.as_ptr() as *const XNode<I, ReadOnly>) })
+    fn entry<'a>(&'a self, offset: u8) -> *const XEntry<I> {
+        let lock = self.inner.lock().unwrap();
+        &lock.slots[offset as usize] as *const XEntry<I>
     }
 
-    pub(crate) fn entry<'a>(&'a self, offset: u8) -> *const XEntry<I> {
-        let lock = self.inner.lock().unwrap();
-        let entry = lock.entry(offset);
-        entry
+    /// Obtain a reference to the XEntry in the slots of the node. The input `offset` indicate
+    /// the offset of the target XEntry in the slots.
+    pub(crate) fn ref_node_entry(&self, offset: u8) -> &XEntry<I> {
+        let target_entry_ptr = self.entry(offset);
+        // Safety: The returned entry has the same lifetime with the XNode that owns it.
+        // Hence the position that `target_entry_ptr` points to will be valid during the usage of returned reference.
+        unsafe { &*target_entry_ptr }
     }
 }
 
 impl<I: ItemEntry> XNode<I, ReadWrite> {
-    pub(crate) fn parent(&self) -> Option<&XNode<I, ReadWrite>> {
-        self.inner
-            .lock()
-            .unwrap()
-            .parent
-            .as_ref()
-            .map(|parent| unsafe { &*(parent.as_ptr()) })
-    }
-
-    pub(crate) fn entry<'a>(&'a self, offset: u8) -> *const XEntry<I> {
+    fn entry<'a>(&'a self, offset: u8) -> *const XEntry<I> {
         let mut lock = self.inner.lock().unwrap();
-        let entry = lock.entry_mut(offset);
-        entry
+
+        // When a modification to the target entry is needed, it first checks whether the entry is shared with other XArrays.
+        // If it is, then it performs COW by allocating a new entry and using it,
+        // to prevent the modification from affecting the read or write operations on other XArrays.
+        if let Some(new_entry) = self.copy_if_shared(&lock.slots[offset as usize]) {
+            lock.set_entry(offset, new_entry);
+        }
+        &lock.slots[offset as usize] as *const XEntry<I>
     }
 
-    pub(crate) fn set_parent(&self, parent: &XNode<I, ReadWrite>) {
-        let parent = {
-            let arc = unsafe { Arc::from_raw(parent as *const XNode<I, ReadWrite>) };
-            let weak = Arc::downgrade(&arc);
-            core::mem::forget(arc);
-            weak
-        };
-        self.inner.lock().unwrap().parent = Some(parent);
+    /// Obtain a reference to the XEntry in the slots of the node. The input `offset` indicate
+    /// the offset of target XEntry in the slots.
+    pub(crate) fn ref_node_entry<'a>(&self, offset: u8) -> &XEntry<I> {
+        let target_entry_ptr = self.entry(offset);
+        // Safety: The returned entry has the same lifetime with the XNode that owns it.
+        // Hence the position that `target_entry_ptr` points to will be valid during the usage of returned reference.
+        unsafe { &*target_entry_ptr }
     }
 
     pub(crate) fn set_entry(&self, offset: u8, entry: XEntry<I>) -> XEntry<I> {
@@ -188,29 +182,17 @@ impl<I: ItemEntry> XNode<I, ReadWrite> {
 }
 
 impl<I: ItemEntry> XNodeInner<I> {
-    pub(crate) fn new(parent: Option<Weak<XNode<I, ReadWrite>>>) -> Self {
+    pub(crate) fn new() -> Self {
         Self {
-            parent,
             slots: [XEntry::EMPTY; SLOT_SIZE],
             marks: [Mark::EMPTY; 3],
         }
     }
 
-    pub(crate) fn entry(&self, offset: u8) -> *const XEntry<I> {
-        &self.slots[offset as usize] as *const XEntry<I>
-    }
-
-    pub(crate) fn entry_mut(&mut self, offset: u8) -> *const XEntry<I> {
-        // When a modification to the target entry is needed, it first checks whether the entry is shared with other XArrays.
-        // If it is, then it performs COW by allocating a new entry and using it,
-        // to prevent the modification from affecting the read or write operations on other XArrays.
-        if let Some(new_entry) = self.copy_if_shared(&self.slots[offset as usize]) {
-            self.set_entry(offset, new_entry);
-        }
-        &self.slots[offset as usize] as *const XEntry<I>
-    }
-
     pub(crate) fn set_entry(&mut self, offset: u8, entry: XEntry<I>) -> XEntry<I> {
+        for i in 0..3 {
+            self.marks[i].unset(offset);
+        }
         let old_entry = core::mem::replace(&mut self.slots[offset as usize], entry);
         old_entry
     }
@@ -240,11 +222,8 @@ pub(crate) fn deep_clone_node_entry<I: ItemEntry + Clone>(entry: &XEntry<I>) -> 
     debug_assert!(entry.is_node());
     let new_node = {
         let cloned_node: &XNode<I> = entry.as_node().unwrap();
-        let new_node = XNode::<I, ReadWrite>::new(
-            cloned_node.layer(),
-            cloned_node.offset_in_parent(),
-            cloned_node.inner.lock().unwrap().parent.clone(),
-        );
+        let new_node =
+            XNode::<I, ReadWrite>::new(cloned_node.layer(), cloned_node.offset_in_parent());
         let mut new_node_lock = new_node.inner.lock().unwrap();
         let cloned_node_lock = cloned_node.inner.lock().unwrap();
         new_node_lock.marks = cloned_node_lock.marks;
