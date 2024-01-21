@@ -1,29 +1,31 @@
 use std::{collections::VecDeque, marker::PhantomData};
 
-use crate::*;
+use super::*;
 
 pub(crate) const BITS_PER_LAYER: usize = 6;
 pub(crate) const SLOT_SIZE: usize = 1 << BITS_PER_LAYER;
 pub(crate) const SLOT_MASK: usize = SLOT_SIZE - 1;
+pub(crate) const MAX_LAYER: usize = 64 / BITS_PER_LAYER + 1;
 
-/// The XArray is an abstract data type which behaves like a very large array of items.
-/// Items here must be a 8 bytes object, like `Arc<T>` and `Box<T>`.
-/// The alignment of the pointers stored by users must be at least 4.
-/// It allows you to sensibly go to the next or previous entry in a cache-efficient manner.
-/// It allows multiple concurrent reads of the XArray, but only permits one write operation on the XArray at any given time.
+/// `XArray` is an abstract data type functioning like an expansive array of items where each item must be an 8-byte object, such as `Arc<T>` or `Box<T>`.
+/// User-stored pointers must have a minimum alignment of 4 bytes. `XArray` facilitates efficient sequential access to adjacent entries,
+/// supporting multiple concurrent reads and exclusively allowing one write operation at a time.
 ///
 /// # Features
-/// **Copy-on-write (COW).** If the item stored in `XArray` implemented `Clone` trait, the `XArray`
-/// can achieve Clone with a COW mechanism. When cloning an XArray, initially the new XArray shares a head with the original XArray
-/// without performing an actual clone. If either of the XArrays needs to perform a mutable operation, a substantive clone of the XNode to be modified is created before making the update.
-/// This ensures that operations on the two XArrays do not affect each other.
-/// **Reference.** All operations on XArray are performed through `Cursor` and `CursorMut`.
-/// Cursor requires an immutable reference to XArray, while CursorMut requires a mutable reference.
-/// Therefore, XArray can have multiple Cursors operating at the same time, whereas the operations of CursorMut are exclusive (similar to the relationship between & and &mut).
-/// **Mark.** `XArray` supports the ability to add marks to any stored item to assist users.
-/// By default, an item can be marked with up to three different marks, with each mark being independent of the others.
-/// Marks for an item are typically enumerations that must implement the ValidMark trait.
-/// Internal nodes can also be marked. When an intermediate node is marked, it signifies that it has child nodes that have been marked.
+/// **Copy-on-write (COW):** If items within `XArray` implement the `Clone` trait, cloning can leverage a COW mechanism.
+/// A clone of an `XArray` initially shares the head node with the original, avoiding immediate deep copying.
+/// If a mutable operation is required on either `XArray`, a deep copy of the relevant `XNode` is made first, ensuring isolated operations.
+///
+/// **Cursors:** Interaction with `XArray` is mediated through `Cursor` and `CursorMut`.
+/// A `Cursor` requires an immutable reference, while `CursorMut` requires a mutable reference.
+/// As such, multiple `Cursor` instances can coexist, but `CursorMut` operations are singular,
+/// reflecting the behavior of shared (`&`) and exclusive (`&mut`) references.
+/// Cursors offer precise index positioning and traversal capabilities in the `XArray`.
+///
+/// **Marking:** `XArray` enables marking of individual items or the `XArray` itself for user convenience.
+/// Items and the `XArray` can have up to three distinct marks by default, with each mark independently maintained.
+/// Marks are generally enums implementing the `ValidMark` trait. Marking is also applicable to internal nodes,
+/// indicating marked descendant nodes, though such marking remains transparent to users.
 ///
 /// # Example
 ///
@@ -52,6 +54,7 @@ where
     I: ItemEntry,
     M: ValidMark,
 {
+    marks: [bool; 3],
     head: XEntry<I>,
     _marker: PhantomData<(I, M)>,
 }
@@ -60,9 +63,25 @@ impl<I: ItemEntry, M: ValidMark> XArray<I, M> {
     /// Make a new, empty XArray.
     pub const fn new() -> Self {
         Self {
+            marks: [false; 3],
             head: XEntry::EMPTY,
             _marker: PhantomData,
         }
+    }
+
+    /// Mark the `XArray` with the input `mark`.
+    pub fn set_mark(&mut self, mark: M) {
+        self.marks[mark.index()] = true;
+    }
+
+    /// Unset the input `mark` for the `XArray`.
+    pub fn unset_mark(&mut self, mark: M) {
+        self.marks[mark.index()] = false;
+    }
+
+    /// Judge if the `XArray` is marked with the input `mark`.
+    pub fn is_marked(&self, mark: M) -> bool {
+        self.marks[mark.index()]
     }
 
     /// Return a reference to the head entry, and later will not modify the XNode pointed to by the `head`.
@@ -99,20 +118,14 @@ impl<I: ItemEntry, M: ValidMark> XArray<I, M> {
     /// If the target item exists, return it with `Some`, Otherwise, return `None`.
     pub fn load(&self, index: u64) -> Option<&I> {
         let mut cursor = self.cursor(index);
-        let entry = cursor.load();
-        if entry.is_some_and(|entry| entry.is_item()) {
-            entry.map(|entry| unsafe { &*(entry as *const XEntry<I> as *const I) })
-        } else {
-            None
-        }
+        cursor.load()
     }
 
     /// Stores the provided item in the `XArray` at the target index,
     /// and return the old item if it was previously stored in target index.
     pub fn store(&mut self, index: u64, item: I) -> Option<I> {
-        let stored_entry = XEntry::from_item(item);
-        let old_entry = self.cursor_mut(index).store(stored_entry);
-        XEntry::into_item(old_entry)
+        let mut cursor = self.cursor_mut(index);
+        cursor.store(item)
     }
 
     /// Attempts to load the item and its mark information about input `mark` at the target index within the `XArray`.
@@ -125,52 +138,22 @@ impl<I: ItemEntry, M: ValidMark> XArray<I, M> {
         } else {
             None
         };
-        if entry.is_some_and(|entry| entry.is_item()) {
-            entry.map(|entry| {
-                (
-                    unsafe { &*(entry as *const XEntry<I> as *const I) },
-                    mark.unwrap(),
-                )
-            })
-        } else {
-            None
-        }
+        entry.map(|entry| (entry, mark.unwrap()))
     }
 
     /// Stores the provided item in the `XArray` at the target index and mark it with input `mark`.
     /// and return the old item if it was previously stored in target index.
     pub fn store_with_mark(&mut self, index: u64, item: I, mark: M) -> Option<I> {
-        let stored_entry = XEntry::from_item(item);
         let mut cursor = self.cursor_mut(index);
-        let old_entry = cursor.store(stored_entry);
+        let old_item = cursor.store(item);
         cursor.set_mark(mark).unwrap();
-        XEntry::into_item(old_entry)
-    }
-
-    /// Mark the item at the target index in the `XArray` with the input `mark`.
-    /// If the item does not exist, return an Error.
-    pub fn set_mark(&mut self, index: u64, mark: M) -> Result<(), ()> {
-        self.cursor_mut(index).set_mark(mark)
-    }
-
-    /// Unset the input `mark` for the item at the target index in the `XArray`.
-    /// If the item does not exist, return an Error.
-    pub fn unset_mark(&mut self, index: u64, mark: M) -> Result<(), ()> {
-        self.cursor_mut(index).unset_mark(mark)
-    }
-
-    /// Obtain a reference to the XEntry from a pointer pointing to it.
-    ///
-    /// # Safety
-    /// The user must ensure that the pointer remains valid for the duration of use of the target XEntry reference.
-    pub(crate) unsafe fn ref_entry(&self, entry_ptr: *const XEntry<I>) -> &XEntry<I> {
-        &*entry_ptr
+        old_item
     }
 
     /// Unset the input `mark` for all of the items in the `XArray`.
     pub fn unset_mark_all(&mut self, mark: M) {
         let mut handle_list = VecDeque::new();
-        if let Some(node) = self.head.as_node_mut() {
+        if let Some(node) = self.head_mut().as_node_mut() {
             handle_list.push_back(node);
         }
         while !handle_list.is_empty() {
@@ -179,8 +162,7 @@ impl<I: ItemEntry, M: ValidMark> XArray<I, M> {
             let node_mark = node.mark(mark.index());
             while (offset as usize) < SLOT_SIZE {
                 if node_mark.is_marked(offset) {
-                    // Safety: During this operation, the used XNode will not be removed and rge referenced XEntry must be valid.
-                    let entry = unsafe { self.ref_entry(node.entry(offset)) };
+                    let entry = node.ref_node_entry(offset);
                     if let Some(node) = entry.as_node_mut() {
                         handle_list.push_back(node);
                     }
@@ -194,17 +176,17 @@ impl<I: ItemEntry, M: ValidMark> XArray<I, M> {
     /// Removes the `XEntry` at the target index within the `XArray`,
     /// and return the removed item if it was previously stored in target index.
     pub fn remove(&mut self, index: u64) -> Option<I> {
-        let old_entry = self.cursor_mut(index).remove();
-        XEntry::into_item(old_entry)
+        let mut cursor = self.cursor_mut(index);
+        cursor.remove()
     }
 
     /// Create an `Cursor` to perform read related operations on the `XArray`.
-    pub(crate) fn cursor<'a>(&'a self, index: u64) -> Cursor<'a, I, M> {
+    pub fn cursor<'a>(&'a self, index: u64) -> Cursor<'a, I, M> {
         Cursor::new(self, index)
     }
 
     /// Create an `CursorMut` to perform read and write operations on the `XArray`.
-    pub(crate) fn cursor_mut<'a>(&'a mut self, index: u64) -> CursorMut<'a, I, M> {
+    pub fn cursor_mut<'a>(&'a mut self, index: u64) -> CursorMut<'a, I, M> {
         CursorMut::new(self, index)
     }
 }
@@ -214,6 +196,7 @@ impl<I: ItemEntry + Clone, M: ValidMark> Clone for XArray<I, M> {
     fn clone(&self) -> Self {
         let cloned_head = self.head.clone();
         Self {
+            marks: self.marks,
             head: cloned_head,
             _marker: PhantomData,
         }

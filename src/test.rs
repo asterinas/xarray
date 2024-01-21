@@ -54,9 +54,14 @@ fn test_mark() {
         let value = Arc::new(i * 2);
         xarray_arc.store(i as u64, value);
     }
-    xarray_arc.set_mark(1000, MarkDemo::Mark0).unwrap();
-    xarray_arc.set_mark(1000, MarkDemo::Mark1).unwrap();
-    xarray_arc.set_mark(2000, MarkDemo::Mark1).unwrap();
+    let mut cursor = xarray_arc.cursor_mut(1000);
+    cursor.set_mark(MarkDemo::Mark0).unwrap();
+    cursor.set_mark(MarkDemo::Mark1).unwrap();
+    cursor.reset_to(2000);
+    cursor.set_mark(MarkDemo::Mark1).unwrap();
+    cursor.reset_to(20000);
+    assert!(Err(()) == cursor.set_mark(MarkDemo::Mark1));
+    assert!(None == cursor.load());
     let (value1, value1_mark0) = xarray_arc.load_with_mark(1000, MarkDemo::Mark0).unwrap();
     let (_, value1_mark1) = xarray_arc.load_with_mark(1000, MarkDemo::Mark1).unwrap();
     let (value2, value2_mark1) = xarray_arc.load_with_mark(2000, MarkDemo::Mark1).unwrap();
@@ -70,15 +75,14 @@ fn test_mark() {
     assert!(value2_mark0 == false);
     assert!(value2_mark1 == true);
     assert!(value3_mark1 == false);
-    assert!(Err(()) == xarray_arc.set_mark(20000, MarkDemo::Mark1));
 
-    xarray_arc.unset_mark(1000, MarkDemo::Mark0).unwrap();
-    xarray_arc.unset_mark(1000, MarkDemo::Mark2).unwrap();
+    let mut cursor = xarray_arc.cursor_mut(1000);
+    cursor.unset_mark(MarkDemo::Mark0).unwrap();
+    cursor.unset_mark(MarkDemo::Mark2).unwrap();
     let (_, value1_mark0) = xarray_arc.load_with_mark(1000, MarkDemo::Mark0).unwrap();
     let (_, value1_mark2) = xarray_arc.load_with_mark(1000, MarkDemo::Mark2).unwrap();
     assert!(value1_mark0 == false);
     assert!(value1_mark2 == false);
-    assert!(Err(()) == xarray_arc.unset_mark(20000, MarkDemo::Mark1));
 
     xarray_arc.unset_mark_all(MarkDemo::Mark1);
     let (_, value2_mark1) = xarray_arc.load_with_mark(2000, MarkDemo::Mark1).unwrap();
@@ -164,10 +168,15 @@ fn test_cow_mark() {
         xarray_arc.store(i as u64, value);
     }
     let mut xarray_clone = xarray_arc.clone();
-    xarray_arc.set_mark(1000, MarkDemo::Mark0).unwrap();
-    xarray_arc.set_mark(2000, MarkDemo::Mark0).unwrap();
-    xarray_clone.set_mark(1000, MarkDemo::Mark1).unwrap();
-    xarray_arc.set_mark(3000, MarkDemo::Mark0).unwrap();
+    let mut cursor_arc = xarray_arc.cursor_mut(1000);
+    let mut cursor_clone = xarray_clone.cursor_mut(1000);
+    cursor_arc.set_mark(MarkDemo::Mark0).unwrap();
+    cursor_arc.reset_to(2000);
+    cursor_arc.set_mark(MarkDemo::Mark0).unwrap();
+    cursor_arc.reset_to(3000);
+    cursor_arc.set_mark(MarkDemo::Mark0).unwrap();
+
+    cursor_clone.set_mark(MarkDemo::Mark1).unwrap();
 
     let (_, mark0_1000_arc) = xarray_arc.load_with_mark(1000, MarkDemo::Mark0).unwrap();
     let (_, mark0_2000_arc) = xarray_arc.load_with_mark(2000, MarkDemo::Mark0).unwrap();
@@ -186,4 +195,28 @@ fn test_cow_mark() {
     assert!(mark1_1000_clone == true);
     assert!(mark0_3000_arc == true);
     assert!(mark0_3000_clone == false);
+}
+
+#[test]
+fn test_next() {
+    let mut xarray_arc: XArray<Arc<i32>> = XArray::new();
+    for i in 1..10000 {
+        let value = Arc::new(i * 2);
+        xarray_arc.store(i as u64, value);
+    }
+    let mut cursor = xarray_arc.cursor_mut(0);
+    for i in 1..10000 {
+        cursor.next();
+        let value = cursor.load().unwrap();
+        assert!(*value.as_ref() == i * 2)
+    }
+    for i in 0..10000 {
+        cursor.next();
+        let value = Arc::new((10000 + i) * 2);
+        cursor.store(value);
+    }
+    for i in 10000..20000 {
+        let value = xarray_arc.load(i as u64).unwrap();
+        assert!(*value.as_ref() == i * 2)
+    }
 }

@@ -1,4 +1,4 @@
-use crate::*;
+use super::*;
 
 /// The COW trait provides the capability for Copy-On-Write (COW) behavior to structures related to XArray,
 /// allowing them to perform COW operations on their internal XEntries.
@@ -9,13 +9,13 @@ pub(crate) trait Cow<I: ItemEntry> {
     fn copy_if_shared(&self, entry: &XEntry<I>) -> Option<XEntry<I>>;
 }
 
-impl<I: ItemEntry> Cow<I> for XNodeInner<I> {
+impl<I: ItemEntry> Cow<I> for XNode<I, ReadWrite> {
     default fn copy_if_shared(&self, _entry: &XEntry<I>) -> Option<XEntry<I>> {
         None
     }
 }
 
-impl<I: ItemEntry + Clone> Cow<I> for XNodeInner<I> {
+impl<I: ItemEntry + Clone> Cow<I> for XNode<I, ReadWrite> {
     fn copy_if_shared(&self, entry: &XEntry<I>) -> Option<XEntry<I>> {
         copy_if_shared(entry)
     }
