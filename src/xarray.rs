@@ -1,11 +1,15 @@
-use std::{collections::VecDeque, marker::PhantomData};
+use alloc::collections::VecDeque;
+use core::{
+    marker::PhantomData,
+    ops::{Deref, DerefMut},
+};
 
 use super::*;
 
-pub(crate) const BITS_PER_LAYER: usize = 6;
-pub(crate) const SLOT_SIZE: usize = 1 << BITS_PER_LAYER;
-pub(crate) const SLOT_MASK: usize = SLOT_SIZE - 1;
-pub(crate) const MAX_LAYER: usize = 64 / BITS_PER_LAYER + 1;
+pub(super) const BITS_PER_LAYER: usize = 6;
+pub(super) const SLOT_SIZE: usize = 1 << BITS_PER_LAYER;
+pub(super) const SLOT_MASK: usize = SLOT_SIZE - 1;
+pub(super) const MAX_HEIGHT: usize = 64 / BITS_PER_LAYER + 1;
 
 /// `XArray` is an abstract data type functioning like an expansive array of items where each item must be an 8-byte object, such as `Arc<T>` or `Box<T>`.
 /// User-stored pointers must have a minimum alignment of 4 bytes. `XArray` facilitates efficient sequential access to adjacent entries,
@@ -31,9 +35,10 @@ pub(crate) const MAX_LAYER: usize = 64 / BITS_PER_LAYER + 1;
 ///
 /// ```
 /// use std::sync::Arc;
+/// use std::sync::{Mutex, MutexGuard};
 /// use xarray::*;
 ///
-/// let mut xarray_arc: XArray<Arc<i32>> = XArray::new();
+/// let mut xarray_arc: XArray<Arc<i32>, StdMutex> = XArray::new();
 /// let value = Arc::new(10);
 /// xarray_arc.store(333, value);
 /// assert!(*xarray_arc.load(333).unwrap().as_ref() == 10);
@@ -49,17 +54,17 @@ pub(crate) const MAX_LAYER: usize = 64 / BITS_PER_LAYER + 1;
 ///
 /// The concepts XArray are originally introduced by Linux, which keeps the data structure of Linux's radix tree
 /// [Linux Radix Trees](https://lwn.net/Articles/175432/).
-pub struct XArray<I, M = NoneMark>
+pub struct XArray<I, L: XLock, M = NoneMark>
 where
     I: ItemEntry,
     M: ValidMark,
 {
     marks: [bool; 3],
-    head: XEntry<I>,
+    head: XEntry<I, L>,
     _marker: PhantomData<(I, M)>,
 }
 
-impl<I: ItemEntry, M: ValidMark> XArray<I, M> {
+impl<I: ItemEntry, L: XLock, M: ValidMark> XArray<I, L, M> {
     /// Make a new, empty XArray.
     pub const fn new() -> Self {
         Self {
@@ -85,31 +90,33 @@ impl<I: ItemEntry, M: ValidMark> XArray<I, M> {
     }
 
     /// Return a reference to the head entry, and later will not modify the XNode pointed to by the `head`.
-    pub(crate) fn head(&self) -> &XEntry<I> {
+    pub(super) fn head(&self) -> &XEntry<I, L> {
         &self.head
     }
 
-    /// Return a reference to the head entry, and later will modify the XNode pointed to by the `head`.
-    pub(crate) fn head_mut(&mut self) -> &XEntry<I> {
-        // When a modification to the head is needed, it first checks whether the head is shared with other XArrays.
-        // If it is, then it performs COW by allocating a new head and using it,
-        // to prevent the modification from affecting the read or write operations on other XArrays.
-        if let Some(new_head) = self.copy_if_shared(&self.head) {
-            self.set_head(new_head);
+    /// Return a reference to the head entry, and later may modify the XNode pointed to by the `head`.
+    pub(super) fn head_mut(&mut self, is_exclusive: bool) -> &XEntry<I, L> {
+        if is_exclusive {
+            // When a modification to the head is needed, it first checks whether the head is shared with other XArrays.
+            // If it is, then it performs COW by allocating a new head and using it,
+            // to prevent the modification from affecting the read or write operations on other XArrays.
+            if let Some(new_head) = self.copy_if_shared(&self.head) {
+                self.set_head(new_head);
+            }
         }
         &self.head
     }
 
-    pub(crate) fn max_index(&self) -> u64 {
+    pub(super) fn max_index(&self) -> u64 {
         if let Some(node) = self.head.as_node() {
-            node.layer().max_index()
+            node.height().max_index()
         } else {
             0
         }
     }
 
     /// Set the head of the `XArray` with the new `XEntry`, and return the old `head`.
-    pub(crate) fn set_head(&mut self, head: XEntry<I>) -> XEntry<I> {
+    pub(super) fn set_head(&mut self, head: XEntry<I, L>) -> XEntry<I, L> {
         let old_head = core::mem::replace(&mut self.head, head);
         old_head
     }
@@ -153,7 +160,7 @@ impl<I: ItemEntry, M: ValidMark> XArray<I, M> {
     /// Unset the input `mark` for all of the items in the `XArray`.
     pub fn unset_mark_all(&mut self, mark: M) {
         let mut handle_list = VecDeque::new();
-        if let Some(node) = self.head_mut().as_node_mut() {
+        if let Some(node) = self.head_mut(true).as_node_mut() {
             handle_list.push_back(node);
         }
         while !handle_list.is_empty() {
@@ -162,7 +169,7 @@ impl<I: ItemEntry, M: ValidMark> XArray<I, M> {
             let node_mark = node.mark(mark.index());
             while (offset as usize) < SLOT_SIZE {
                 if node_mark.is_marked(offset) {
-                    let entry = node.ref_node_entry(offset);
+                    let entry = node.ref_node_entry(true, offset);
                     if let Some(node) = entry.as_node_mut() {
                         handle_list.push_back(node);
                     }
@@ -181,17 +188,25 @@ impl<I: ItemEntry, M: ValidMark> XArray<I, M> {
     }
 
     /// Create an `Cursor` to perform read related operations on the `XArray`.
-    pub fn cursor<'a>(&'a self, index: u64) -> Cursor<'a, I, M> {
+    pub fn cursor<'a>(&'a self, index: u64) -> Cursor<'a, I, L, M> {
         Cursor::new(self, index)
     }
 
     /// Create an `CursorMut` to perform read and write operations on the `XArray`.
-    pub fn cursor_mut<'a>(&'a mut self, index: u64) -> CursorMut<'a, I, M> {
+    pub fn cursor_mut<'a>(&'a mut self, index: u64) -> CursorMut<'a, I, L, M> {
         CursorMut::new(self, index)
+    }
+
+    pub fn range<'a>(&'a self, range: core::ops::Range<u64>) -> Range<'a, I, L, M> {
+        let cursor = Cursor::new(self, range.start);
+        Range {
+            cursor,
+            end: range.end,
+        }
     }
 }
 
-impl<I: ItemEntry + Clone, M: ValidMark> Clone for XArray<I, M> {
+impl<I: ItemEntry + Clone, L: XLock, M: ValidMark> Clone for XArray<I, L, M> {
     /// Clone with cow mechanism.
     fn clone(&self) -> Self {
         let cloned_head = self.head.clone();
@@ -199,6 +214,56 @@ impl<I: ItemEntry + Clone, M: ValidMark> Clone for XArray<I, M> {
             marks: self.marks,
             head: cloned_head,
             _marker: PhantomData,
+        }
+    }
+}
+
+pub trait ValidLock<T>: Sized {
+    type Target<'a>: Deref<Target = T> + DerefMut<Target = T>
+    where
+        Self: 'a;
+
+    fn new(inner: T) -> Self;
+
+    fn lock(&self) -> Self::Target<'_>;
+}
+
+pub trait XLock {
+    type Lock<T>: ValidLock<T>;
+
+    fn new<T>(inner: T) -> Self::Lock<T> {
+        Self::Lock::<T>::new(inner)
+    }
+}
+
+pub struct Range<'a, I, L, M>
+where
+    I: ItemEntry,
+    L: XLock,
+    M: ValidMark,
+{
+    cursor: Cursor<'a, I, L, M>,
+    end: u64,
+}
+
+impl<'a, I: ItemEntry, L: XLock, M: ValidMark> core::iter::Iterator for Range<'a, I, L, M> {
+    type Item = (u64, &'a I);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        loop {
+            if self.cursor.index() >= self.end {
+                return None;
+            }
+
+            let item = self.cursor.load();
+            if item.is_none() {
+                self.cursor.next();
+                continue;
+            }
+
+            let res = item.map(|item| (self.cursor.index(), item));
+            self.cursor.next();
+            return res;
         }
     }
 }

@@ -2,34 +2,34 @@
 /// A mark can be used to indicate which slots in an XNode contain items that have been marked.
 /// It internally stores a u64, functioning as a bitmap,
 /// where each bit that is set to 1 represents a slot at the corresponding offset that has been marked.
-pub(crate) struct Mark {
+pub(super) struct Mark {
     inner: u64,
 }
 
 impl Mark {
-    pub(crate) const EMPTY: Self = Self::new(0);
+    pub const EMPTY: Self = Self::new(0);
 
-    pub(crate) const fn new(inner: u64) -> Self {
+    pub const fn new(inner: u64) -> Self {
         Self { inner }
     }
 
-    pub(crate) fn set(&mut self, offset: u8) {
+    pub fn set(&mut self, offset: u8) {
         self.inner |= 1 << offset as u64;
     }
 
-    pub(crate) fn unset(&mut self, offset: u8) {
+    pub fn unset(&mut self, offset: u8) {
         self.inner &= !(1 << offset as u64);
     }
 
-    pub(crate) fn clear(&mut self) {
+    pub fn clear(&mut self) {
         self.inner = 0
     }
 
-    pub(crate) fn is_marked(&self, offset: u8) -> bool {
+    pub fn is_marked(&self, offset: u8) -> bool {
         (self.inner & 1 << offset as u64) != 0
     }
 
-    pub(crate) fn is_clear(&self) -> bool {
+    pub fn is_clear(&self) -> bool {
         self.inner == 0
     }
 }

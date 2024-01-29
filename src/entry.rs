@@ -1,5 +1,7 @@
+use alloc::boxed::Box;
+use alloc::sync::Arc;
 use core::marker::PhantomData;
-use std::{mem::ManuallyDrop, sync::Arc};
+use core::mem::ManuallyDrop;
 
 use super::*;
 
@@ -60,15 +62,16 @@ unsafe impl<T> ItemEntry for Box<T> {
 /// will be transferred to the `XEntry`. If the stored item in the XArray implemented Clone trait, then the XEntry
 /// in the XArray can also implement Clone trait.
 #[derive(Eq, Debug)]
-pub(crate) struct XEntry<I>
+pub(super) struct XEntry<I, L>
 where
     I: ItemEntry,
+    L: XLock,
 {
     raw: usize,
-    _marker: core::marker::PhantomData<I>,
+    _marker: core::marker::PhantomData<(I, L)>,
 }
 
-impl<I: ItemEntry> Drop for XEntry<I> {
+impl<I: ItemEntry, L: XLock> Drop for XEntry<I, L> {
     fn drop(&mut self) {
         if self.is_item() {
             unsafe {
@@ -77,13 +80,13 @@ impl<I: ItemEntry> Drop for XEntry<I> {
         }
         if self.is_node() {
             unsafe {
-                Arc::from_raw((self.raw - 2) as *const XNode<I>);
+                Arc::from_raw((self.raw - 2) as *const XNode<I, L>);
             }
         }
     }
 }
 
-impl<I: ItemEntry + Clone> Clone for XEntry<I> {
+impl<I: ItemEntry + Clone, L: XLock> Clone for XEntry<I, L> {
     fn clone(&self) -> Self {
         if self.is_item() {
             let cloned_entry = unsafe {
@@ -94,7 +97,7 @@ impl<I: ItemEntry + Clone> Clone for XEntry<I> {
         } else {
             if self.is_node() {
                 unsafe {
-                    Arc::increment_strong_count((self.raw - 2) as *const XNode<I>);
+                    Arc::increment_strong_count((self.raw - 2) as *const XNode<I, L>);
                 }
             }
             Self {
@@ -105,48 +108,48 @@ impl<I: ItemEntry + Clone> Clone for XEntry<I> {
     }
 }
 
-impl<I: ItemEntry> PartialEq for XEntry<I> {
+impl<I: ItemEntry, L: XLock> PartialEq for XEntry<I, L> {
     fn eq(&self, o: &Self) -> bool {
         self.raw == o.raw
     }
 }
 
-impl<I: ItemEntry> XEntry<I> {
-    pub(crate) fn raw(&self) -> usize {
+impl<I: ItemEntry, L: XLock> XEntry<I, L> {
+    pub fn raw(&self) -> usize {
         self.raw
     }
 
-    pub(crate) const EMPTY: Self = unsafe { Self::new(0) };
+    pub const EMPTY: Self = unsafe { Self::new(0) };
 
-    pub(crate) const unsafe fn new(raw: usize) -> Self {
+    pub const unsafe fn new(raw: usize) -> Self {
         Self {
             raw,
             _marker: PhantomData,
         }
     }
 
-    pub(crate) fn is_null(&self) -> bool {
+    pub fn is_null(&self) -> bool {
         self.raw == 0
     }
 
-    pub(crate) fn is_internal(&self) -> bool {
+    pub fn is_internal(&self) -> bool {
         self.raw & 3 == 2
     }
 
-    pub(crate) fn is_item(&self) -> bool {
+    pub fn is_item(&self) -> bool {
         !self.is_null() && !self.is_internal()
     }
 
-    pub(crate) fn is_node(&self) -> bool {
+    pub fn is_node(&self) -> bool {
         self.is_internal() && self.raw > (SLOT_SIZE << 2)
     }
 
-    pub(crate) fn from_item(item: I) -> Self {
+    pub fn from_item(item: I) -> Self {
         let raw = I::into_raw(item);
         unsafe { Self::new(raw as usize) }
     }
 
-    pub(crate) fn into_item(self) -> Option<I> {
+    pub fn into_item(self) -> Option<I> {
         if self.is_item() {
             let item = unsafe { I::from_raw(self.raw) };
             core::mem::forget(self);
@@ -156,7 +159,7 @@ impl<I: ItemEntry> XEntry<I> {
         }
     }
 
-    pub(crate) fn from_node<Operation>(node: XNode<I, Operation>) -> Self {
+    pub fn from_node<Operation>(node: XNode<I, L, Operation>) -> Self {
         let node_ptr = {
             let arc_node = Arc::new(node);
             Arc::into_raw(arc_node)
@@ -164,10 +167,10 @@ impl<I: ItemEntry> XEntry<I> {
         unsafe { Self::new(node_ptr as usize | 2) }
     }
 
-    pub(crate) fn as_node(&self) -> Option<&XNode<I>> {
+    pub fn as_node(&self) -> Option<&XNode<I, L>> {
         if self.is_node() {
             unsafe {
-                let node_ref = &*((self.raw - 2) as *const XNode<I>);
+                let node_ref = &*((self.raw - 2) as *const XNode<I, L>);
                 Some(node_ref)
             }
         } else {
@@ -175,10 +178,10 @@ impl<I: ItemEntry> XEntry<I> {
         }
     }
 
-    pub(crate) fn as_node_mut<'a>(&self) -> Option<&'a XNode<I, ReadWrite>> {
+    pub fn as_node_mut<'a>(&self) -> Option<&'a XNode<I, L, ReadWrite>> {
         if self.is_node() {
             unsafe {
-                let node_ref = &*((self.raw - 2) as *const XNode<I, ReadWrite>);
+                let node_ref = &*((self.raw - 2) as *const XNode<I, L, ReadWrite>);
                 Some(node_ref)
             }
         } else {
@@ -186,7 +189,7 @@ impl<I: ItemEntry> XEntry<I> {
         }
     }
 
-    pub(crate) fn node_strong_count(&self) -> Option<usize> {
+    pub fn node_strong_count(&self) -> Option<usize> {
         if self.is_node() {
             let raw_ptr = (self.raw - 2) as *const u8;
             unsafe {
@@ -200,6 +203,3 @@ impl<I: ItemEntry> XEntry<I> {
         }
     }
 }
-
-unsafe impl<I: ItemEntry + Sync> Sync for XEntry<I> {}
-unsafe impl<I: ItemEntry + Send> Send for XEntry<I> {}
