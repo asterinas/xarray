@@ -236,6 +236,17 @@ pub trait XLock {
     }
 }
 
+#[macro_export]
+macro_rules! abstract_lock_to {
+    ($lock_type:ident, $name:ident) => {
+        pub struct $name;
+
+        impl XLock for $name {
+            type Lock<T> = $lock_type<T>;
+        }
+    };
+}
+
 pub struct Range<'a, I, L, M>
 where
     I: ItemEntry,

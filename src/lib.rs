@@ -7,12 +7,14 @@
 extern crate alloc;
 extern crate smallvec;
 
-use cow::*;
-use cursor::*;
-use entry::*;
-use mark::*;
-use node::*;
+
+pub use cursor::*;
+pub use entry::*;
+pub use mark::*;
 pub use xarray::*;
+
+use cow::*;
+use node::*;
 
 mod cow;
 mod cursor;
@@ -47,9 +49,5 @@ mod std_specific {
         }
     }
 
-    pub struct StdMutex;
-
-    impl XLock for StdMutex {
-        type Lock<T> = Mutex<T>;
-    }
+    abstract_lock_to!(Mutex, StdMutex);
 }
