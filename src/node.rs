@@ -4,7 +4,11 @@ use core::{
     ops::{Deref, DerefMut},
 };
 
-use super::*;
+use crate::cow::Cow;
+use crate::entry::{ItemEntry, XEntry};
+use crate::lock::{ValidLock, XLock};
+use crate::mark::Mark;
+use crate::xarray::{BITS_PER_LAYER, SLOT_MASK, SLOT_SIZE};
 
 pub(super) struct ReadOnly {}
 pub(super) struct ReadWrite {}
@@ -140,12 +144,14 @@ impl<I: ItemEntry, L: XLock, Operation> XNode<I, L, Operation> {
 impl<I: ItemEntry, L: XLock> XNode<I, L, ReadOnly> {
     /// Obtain a reference to the XEntry in the slots of the node. The input `offset` indicate
     /// the offset of the target XEntry in the slots.
-    pub fn ref_node_entry(&self, offset: u8) -> &XEntry<I, L> {
+    ///
+    /// # Safety
+    /// Users should ensure that no modifications for slots are made to the current XNode
+    /// while the reference to the returned XEntry exists.
+    pub unsafe fn ref_node_entry(&self, offset: u8) -> &XEntry<I, L> {
         let lock = self.inner.lock();
 
         let entry_ptr = &lock.slots[offset as usize] as *const XEntry<I, L>;
-        // Safety: The returned entry has the same lifetime with the XNode that owns it.
-        // Hence the position that `target_entry_ptr` points to will be valid during the usage of returned reference.
         unsafe { &*entry_ptr }
     }
 }
@@ -153,20 +159,22 @@ impl<I: ItemEntry, L: XLock> XNode<I, L, ReadOnly> {
 impl<I: ItemEntry, L: XLock> XNode<I, L, ReadWrite> {
     /// Obtain a reference to the XEntry in the slots of the node. The input `offset` indicate
     /// the offset of target XEntry in the slots.
-    pub fn ref_node_entry<'a>(&self, is_exclusive: bool, offset: u8) -> &XEntry<I, L> {
+    ///
+    /// # Safety
+    /// Users should ensure that no modifications for slots are made to the current XNode
+    /// while the reference to the returned XEntry exists.
+    pub unsafe fn ref_node_entry(&self, is_exclusive: bool, offset: u8) -> &XEntry<I, L> {
         let mut lock = self.inner.lock();
 
         // When a modification to the target entry is needed, it first checks whether the entry is shared with other XArrays.
         // If it is, then it performs COW by allocating a new entry and using it,
         // to prevent the modification from affecting the read or write operations on other XArrays.
         if is_exclusive {
-            if let Some(new_entry) = self.copy_if_shared(&lock.slots[offset as usize]) {
+            if let Some(new_entry) = lock.slots[offset as usize].copy_if_shared() {
                 lock.set_entry(offset, new_entry);
             }
         }
         let entry_ptr = &lock.slots[offset as usize] as *const XEntry<I, L>;
-        // Safety: The returned entry has the same lifetime with the XNode that owns it.
-        // Hence the position that `target_entry_ptr` points to will be valid during the usage of returned reference.
         unsafe { &*entry_ptr }
     }
 

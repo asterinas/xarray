@@ -3,15 +3,17 @@ use alloc::sync::Arc;
 use core::marker::PhantomData;
 use core::mem::ManuallyDrop;
 
-use super::*;
+use crate::lock::XLock;
+use crate::node::{ReadWrite, XNode};
+use crate::xarray::SLOT_SIZE;
 
 /// A trait that should be implemented for the types users wish to store in an `XArray`.
 /// Items stored in an XArray are required to be 8 bytes in size, Currently it can be various pointer types.
 ///
 /// # Safety
-/// Users must ensure that the produced `usize` of `into_raw()` meets the requirements for an item entry in the XArray. Specifically,
-/// if the original type is a pointer, the last two bits should be 00; if the original
-/// type is a value like usize, the last bit should be 1 (TODO).
+/// Users must ensure that the produced `usize` of `into_raw()` meets the requirements for an item entry
+/// in the XArray. Specifically, if the original type is a pointer, the last two bits should be 00;
+/// if the original type is a value like usize, the last bit should be 1 (TODO).
 pub unsafe trait ItemEntry {
     /// Converts the original type into a `usize`, consuming the ownership of the original type.
     ///
@@ -28,6 +30,7 @@ pub unsafe trait ItemEntry {
 
 unsafe impl<T> ItemEntry for Arc<T> {
     fn into_raw(self) -> usize {
+        // SAFETY: The Arc<T> have the same layout with a raw pointer hence the transmute is valid.
         let raw_ptr = unsafe { core::intrinsics::transmute::<Arc<T>, *const u8>(self) };
         debug_assert!(raw_ptr.is_aligned_to(4));
         raw_ptr as usize
@@ -51,10 +54,12 @@ unsafe impl<T> ItemEntry for Box<T> {
     }
 }
 
-/// The type stored in the head of `XArray` and the slots of `XNode`s, which is the basic unit of storage within an XArray.
+/// The type stored in the head of `XArray` and the slots of `XNode`s, which is the basic unit of storage
+/// within an XArray.
+///
 /// There are the following types of `XEntry`:
-/// - Internal entries: These are invisible to users and have the last two bits set to 10. Currently `XArray` only have node
-/// entries as internal entries, which are entries that point to XNodes.
+/// - Internal entries: These are invisible to users and have the last two bits set to 10. Currently `XArray`
+/// only have node entries as internal entries, which are entries that point to XNodes.
 /// - Item entries: Items stored by the user. Currently stored items can only be pointers and the last two bits
 /// of these item entries are 00.
 ///
@@ -121,6 +126,10 @@ impl<I: ItemEntry, L: XLock> XEntry<I, L> {
 
     pub const EMPTY: Self = unsafe { Self::new(0) };
 
+    /// Create a new XEntry with the input raw value.
+    ///
+    /// # Safety
+    /// Users should ensure the input raw value is corresponding to a valid XEntry.
     pub const unsafe fn new(raw: usize) -> Self {
         Self {
             raw,
@@ -178,7 +187,7 @@ impl<I: ItemEntry, L: XLock> XEntry<I, L> {
         }
     }
 
-    pub fn as_node_mut<'a>(&self) -> Option<&'a XNode<I, L, ReadWrite>> {
+    pub fn as_node_mut(&self) -> Option<&XNode<I, L, ReadWrite>> {
         if self.is_node() {
             unsafe {
                 let node_ref = &*((self.raw - 2) as *const XNode<I, L, ReadWrite>);
@@ -192,12 +201,10 @@ impl<I: ItemEntry, L: XLock> XEntry<I, L> {
     pub fn node_strong_count(&self) -> Option<usize> {
         if self.is_node() {
             let raw_ptr = (self.raw - 2) as *const u8;
-            unsafe {
-                let arc = Arc::from_raw(raw_ptr);
-                let strong_count = Arc::strong_count(&arc);
-                core::mem::forget(arc);
-                Some(strong_count)
-            }
+            let arc = unsafe { Arc::from_raw(raw_ptr) };
+            let strong_count = Arc::strong_count(&arc);
+            core::mem::forget(arc);
+            Some(strong_count)
         } else {
             None
         }
