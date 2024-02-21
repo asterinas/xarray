@@ -34,18 +34,24 @@ impl Mark {
     }
 }
 
-// In XArray, an item can have up to three different marks. Users can use a type to distinguish
-// which kind of mark they want to set. Such a type must implement the `ValidMark` trait,
-// meaning it should be convertible to an index in the range of 0 to 2.
-pub trait ValidMark: Copy + Clone {
-    /// Map the self type to an index in the range 0 to 2.
-    fn index_raw(&self) -> usize;
+/// The mark type used in the XArray. The XArray itself and an item in it can have up to three different marks.
+///
+/// Users can use a self-defined type to distinguish which kind of mark they want to set.
+/// Such a type must implement the `Into<XMark>` trait,
+pub enum XMark {
+    Mark0,
+    Mark1,
+    Mark2,
+}
 
-    /// Users are not required to implement this; it ensures that the mapped index does not exceed 2.
-    fn index(&self) -> usize {
-        let index = self.index_raw();
-        debug_assert!(index < 3);
-        index
+impl XMark {
+    /// Map the XMark to an index in the range 0 to 2.
+    pub(super) fn index(&self) -> usize {
+        match self {
+            XMark::Mark0 => 0,
+            XMark::Mark1 => 1,
+            XMark::Mark2 => 2,
+        }
     }
 }
 
@@ -54,8 +60,8 @@ pub trait ValidMark: Copy + Clone {
 #[derive(Clone, Copy)]
 pub struct NoneMark {}
 
-impl ValidMark for NoneMark {
-    fn index_raw(&self) -> usize {
-        0
+impl Into<XMark> for NoneMark {
+    fn into(self) -> XMark {
+        panic!("NoneMark can not be used!");
     }
 }
