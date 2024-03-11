@@ -1,3 +1,6 @@
+use core::marker::PhantomData;
+use core::ops::Deref;
+
 use smallvec::SmallVec;
 
 use crate::entry::{ItemEntry, XEntry};
@@ -5,8 +8,6 @@ use crate::lock::XLock;
 use crate::mark::XMark;
 use crate::node::{Height, ReadOnly, ReadWrite, XNode};
 use crate::xarray::{XArray, MAX_HEIGHT, SLOT_SIZE};
-use core::marker::PhantomData;
-use core::ops::Deref;
 
 /// CursorState represents the current state of the cursor. Currently, there are two possible states:
 /// 1. inactive: the state where the cursor is not positioned on any node.

@@ -1,6 +1,6 @@
 use crate::entry::{ItemEntry, XEntry};
 use crate::lock::XLock;
-use crate::node::deep_clone_node_entry;
+use crate::node::deep_copy_node_entry;
 
 /// The COW trait provides the capability for Copy-On-Write (COW) behavior to XEntries with Clone ability.
 pub(super) trait Cow<I: ItemEntry, L: XLock> {
@@ -19,7 +19,7 @@ impl<I: ItemEntry, L: XLock> Cow<I, L> for XEntry<I, L> {
 impl<I: ItemEntry + Clone, L: XLock> Cow<I, L> for XEntry<I, L> {
     fn copy_if_shared(&self) -> Option<XEntry<I, L>> {
         if self.is_node() && self.node_strong_count().unwrap() > 1 {
-            let new_entry = deep_clone_node_entry(self);
+            let new_entry = deep_copy_node_entry(self);
             Some(new_entry)
         } else {
             None
