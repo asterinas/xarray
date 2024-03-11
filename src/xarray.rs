@@ -7,6 +7,8 @@ use crate::entry::{ItemEntry, XEntry};
 use crate::lock::XLock;
 use crate::mark::{NoneMark, XMark};
 use crate::range::Range;
+#[cfg(feature = "std")]
+use crate::StdMutex;
 
 pub(super) const BITS_PER_LAYER: usize = 6;
 pub(super) const SLOT_SIZE: usize = 1 << BITS_PER_LAYER;
@@ -34,7 +36,7 @@ pub(super) const MAX_HEIGHT: usize = 64 / BITS_PER_LAYER + 1;
 ///
 /// **Marking:** `XArray` enables marking of individual items or the `XArray` itself for user convenience.
 /// Items and the `XArray` can have up to three distinct marks by default, with each mark independently maintained.
-/// Users can use self-defined types as marks by implementing the `Into<XMark>` trait for them.
+/// Users can use self-defined types as marks by implementing the `From<Type>` trait for XMark.
 /// Marking is also applicable to internal nodes, indicating marked descendant nodes,
 /// though such marking is not transparent to users.
 ///
@@ -45,24 +47,28 @@ pub(super) const MAX_HEIGHT: usize = 64 / BITS_PER_LAYER + 1;
 /// use std::sync::{Mutex, MutexGuard};
 /// use xarray::*;
 ///
-/// let mut xarray_arc: XArray<Arc<i32>, StdMutex> = XArray::new();
+/// let mut xarray_arc: XArray<Arc<i32>> = XArray::new();
 /// let value = Arc::new(10);
-/// xarray_arc.store(333, value);
-/// assert!(*xarray_arc.load(333).unwrap().as_ref() == 10);
+/// xarray_arc.store(10, value);
+/// assert!(*xarray_arc.load(10).unwrap().as_ref() == 10);
 ///
 /// let mut xarray_clone = xarray_arc.clone();
-/// assert!(*xarray_clone.load(333).unwrap().as_ref() == 10);
+/// assert!(*xarray_clone.load(10).unwrap().as_ref() == 10);
 /// let value = Arc::new(100);
-/// xarray_clone.store(333, value);
+/// xarray_clone.store(10, value);
 ///
-/// assert!(*xarray_arc.load(333).unwrap().as_ref() == 10);
-/// assert!(*xarray_clone.load(333).unwrap().as_ref() == 100);
+/// assert!(*xarray_arc.load(10).unwrap().as_ref() == 10);
+/// assert!(*xarray_clone.load(10).unwrap().as_ref() == 100);
 /// ```
 ///
 /// The concepts XArray are originally introduced by Linux, which keeps the data structure of
 /// Linux's radix tree [Linux Radix Trees](https://lwn.net/Articles/175432/).
-pub struct XArray<I, L, M = NoneMark>
-where
+pub struct XArray<
+    I,
+    #[cfg(feature = "std")] L = StdMutex,
+    #[cfg(not(feature = "std"))] L,
+    M = NoneMark,
+> where
     I: ItemEntry,
     L: XLock,
     M: Into<XMark>,
@@ -188,7 +194,7 @@ impl<I: ItemEntry, L: XLock, M: Into<XMark>> XArray<I, L, M> {
     /// in `XArray`.
     pub fn range(&self, range: core::ops::Range<u64>) -> Range<'_, I, L, M> {
         let cursor = Cursor::new(self, range.start);
-        Range::new(cursor, range.end)
+        Range::new(cursor, range.start, range.end)
     }
 }
 

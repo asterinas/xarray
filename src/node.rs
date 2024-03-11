@@ -6,7 +6,7 @@ use core::{
 
 use crate::cow::Cow;
 use crate::entry::{ItemEntry, XEntry};
-use crate::lock::{ValidLock, XLock};
+use crate::lock::{MutexLock, XLock};
 use crate::mark::Mark;
 use crate::xarray::{BITS_PER_LAYER, SLOT_MASK, SLOT_SIZE};
 
@@ -232,7 +232,7 @@ impl<I: ItemEntry, L: XLock> XNodeInner<I, L> {
     }
 }
 
-pub(super) fn deep_clone_node_entry<I: ItemEntry + Clone, L: XLock>(
+pub(super) fn deep_copy_node_entry<I: ItemEntry + Clone, L: XLock>(
     entry: &XEntry<I, L>,
 ) -> XEntry<I, L> {
     debug_assert!(entry.is_node());

@@ -12,12 +12,13 @@ where
     M: Into<XMark>,
 {
     cursor: Cursor<'a, I, L, M>,
+    start: u64,
     end: u64,
 }
 
 impl<'a, I: ItemEntry, L: XLock, M: Into<XMark>> Range<'a, I, L, M> {
-    pub(super) fn new(cursor: Cursor<'a, I, L, M>, end: u64) -> Self {
-        Range { cursor, end }
+    pub(super) fn new(cursor: Cursor<'a, I, L, M>, start: u64, end: u64) -> Self {
+        Range { cursor, start, end }
     }
 }
 

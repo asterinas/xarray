@@ -10,7 +10,7 @@ extern crate alloc;
 
 pub use cursor::{Cursor, CursorMut};
 pub use entry::ItemEntry;
-pub use lock::{ValidLock, XLock};
+pub use lock::{MutexLock, XLock};
 pub use mark::XMark;
 pub use range::Range;
 pub use xarray::XArray;
