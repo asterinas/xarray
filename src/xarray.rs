@@ -3,7 +3,7 @@ use core::marker::PhantomData;
 
 use crate::cow::Cow;
 use crate::cursor::{Cursor, CursorMut};
-use crate::entry::{ItemEntry, XEntry};
+use crate::entry::{ItemEntry, ItemRef, XEntry};
 use crate::lock::XLock;
 use crate::mark::{NoneMark, XMark};
 use crate::range::Range;
@@ -78,7 +78,7 @@ pub struct XArray<
     _marker: PhantomData<(I, M)>,
 }
 
-impl<I: ItemEntry, L: XLock, M: Into<XMark>> XArray<I, L, M> {
+impl<'a, I: ItemEntry, L: XLock, M: Into<XMark>> XArray<I, L, M> {
     /// Make a new, empty XArray.
     pub const fn new() -> Self {
         Self {
@@ -135,7 +135,7 @@ impl<I: ItemEntry, L: XLock, M: Into<XMark>> XArray<I, L, M> {
 
     /// Attempts to load the item at the target index within the `XArray`.
     /// If the target item exists, return it with `Some`, Otherwise, return `None`.
-    pub fn load(&self, index: u64) -> Option<&I> {
+    pub fn load(&'a self, index: u64) -> Option<ItemRef<'a, I>> {
         let cursor = self.cursor(index);
         cursor.load()
     }

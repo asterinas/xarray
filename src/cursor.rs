@@ -3,7 +3,7 @@ use core::ops::Deref;
 
 use smallvec::SmallVec;
 
-use crate::entry::{ItemEntry, XEntry};
+use crate::entry::{ItemEntry, ItemRef, XEntry};
 use crate::lock::XLock;
 use crate::mark::XMark;
 use crate::node::{Height, ReadOnly, ReadWrite, XNode};
@@ -197,15 +197,12 @@ impl<'a, I: ItemEntry, L: XLock, M: Into<XMark>> Cursor<'a, I, L, M> {
     ///
     /// Returns a reference to the `XEntry` at the target index if succeed.
     /// If the cursor cannot reach to the target index, the method will return `None`.
-    pub fn load(&self) -> Option<&'a I> {
+    pub fn load(&self) -> Option<ItemRef<'a, I>> {
         if let Some(entry) = self.ref_operated_entry() {
-            if entry.is_item() {
-                // SAFETY: If the XEntry is an item entry, its memory layout is guaranteed
-                // to be exactly the same as that of I.
-                return Some(unsafe { &*(entry as *const XEntry<I, L> as *const I) });
-            }
+            entry.as_item_ref()
+        } else {
+            None
         }
-        None
     }
 
     /// Traverse the XArray and move to the node that can operate the target entry.
@@ -331,7 +328,7 @@ impl<'a, I: ItemEntry, L: XLock, M: Into<XMark>> CursorMut<'a, I, L, M> {
     }
 
     /// Get a reference to current operated entry of the CursorMut.
-    fn ref_operated_entry(&self) -> Option<&XEntry<I, L>> {
+    fn ref_operated_entry(&self) -> Option<&'a XEntry<I, L>> {
         // SAFETY: The lifetime of the reference to the operated XEntry is equal to `&self`.
         // Hence when the reference existing there will not be other mutable operation in current `CursorMut`,
         // nor will there be any modification operations on the XNode where it resides.
@@ -379,15 +376,12 @@ impl<'a, I: ItemEntry, L: XLock, M: Into<XMark>> CursorMut<'a, I, L, M> {
     ///
     /// Returns a reference to the `XEntry` at the target index if succeed.
     /// If the cursor cannot reach to the target index, the method will return `None`.
-    pub fn load(&self) -> Option<&I> {
+    pub fn load(&self) -> Option<ItemRef<'a, I>> {
         if let Some(entry) = self.ref_operated_entry() {
-            if entry.is_item() {
-                // SAFETY: If the XEntry is an item entry, its memory layout is guaranteed
-                // to be exactly the same as that of I.
-                return Some(unsafe { &*(entry as *const XEntry<I, L> as *const I) });
-            }
+            entry.as_item_ref()
+        } else {
+            None
         }
-        None
     }
 
     /// Stores the provided `XEntry` in the `XArray` at the position indicated by the current cursor index.

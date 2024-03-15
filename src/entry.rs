@@ -2,6 +2,7 @@ use alloc::boxed::Box;
 use alloc::sync::Arc;
 use core::marker::PhantomData;
 use core::mem::ManuallyDrop;
+use core::ops::Deref;
 
 use crate::lock::XLock;
 use crate::node::{ReadWrite, XNode};
@@ -30,15 +31,13 @@ pub unsafe trait ItemEntry {
 
 unsafe impl<T> ItemEntry for Arc<T> {
     fn into_raw(self) -> usize {
-        // SAFETY: The Arc<T> have the same layout with a raw pointer hence the transmute is valid.
-        let raw_ptr = unsafe { core::intrinsics::transmute::<Arc<T>, *const u8>(self) };
+        let raw_ptr = Arc::into_raw(self);
         debug_assert!(raw_ptr.is_aligned_to(4));
         raw_ptr as usize
     }
 
     unsafe fn from_raw(raw: usize) -> Self {
-        let arc = core::intrinsics::transmute::<usize, Arc<T>>(raw);
-        arc
+        unsafe { Arc::from_raw(raw as *mut T) }
     }
 }
 
@@ -51,6 +50,24 @@ unsafe impl<T> ItemEntry for Box<T> {
 
     unsafe fn from_raw(raw: usize) -> Self {
         Box::from_raw(raw as *mut _)
+    }
+}
+
+#[derive(PartialEq, Debug)]
+pub struct ItemRef<'a, I>
+where
+    I: ItemEntry,
+{
+    item: ManuallyDrop<I>,
+    _marker: PhantomData<&'a I>,
+}
+
+impl<'a, I: ItemEntry> Deref for ItemRef<'a, I>
+{
+    type Target = I;
+
+    fn deref(&self) -> &I {
+        &*self.item
     }
 }
 
@@ -119,7 +136,7 @@ impl<I: ItemEntry, L: XLock> PartialEq for XEntry<I, L> {
     }
 }
 
-impl<I: ItemEntry, L: XLock> XEntry<I, L> {
+impl<'a, I: ItemEntry, L: XLock> XEntry<I, L> {
     pub fn raw(&self) -> usize {
         self.raw
     }
@@ -163,6 +180,18 @@ impl<I: ItemEntry, L: XLock> XEntry<I, L> {
             let item = unsafe { I::from_raw(self.raw) };
             core::mem::forget(self);
             Some(item)
+        } else {
+            None
+        }
+    }
+
+    pub fn as_item_ref(&'a self) -> Option<ItemRef<'a, I>> {
+        if self.is_item() {
+            let item_entry = unsafe { ManuallyDrop::new(I::from_raw(self.raw)) };
+            Some(ItemRef {
+                item: item_entry,
+                _marker: PhantomData,
+            })
         } else {
             None
         }
