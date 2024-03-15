@@ -1,5 +1,5 @@
 use crate::cursor::Cursor;
-use crate::entry::ItemEntry;
+use crate::entry::{ItemEntry, ItemRef};
 use crate::lock::XLock;
 use crate::mark::XMark;
 
@@ -23,7 +23,7 @@ impl<'a, I: ItemEntry, L: XLock, M: Into<XMark>> Range<'a, I, L, M> {
 }
 
 impl<'a, I: ItemEntry, L: XLock, M: Into<XMark>> core::iter::Iterator for Range<'a, I, L, M> {
-    type Item = (u64, &'a I);
+    type Item = (u64, ItemRef<'a, I>);
 
     fn next(&mut self) -> Option<Self::Item> {
         loop {
