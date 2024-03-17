@@ -16,10 +16,26 @@ struct ReadWrite {}
 impl Operation for ReadOnly {}
 impl Operation for ReadWrite {}
 
-/// CursorState represents the current state of the cursor. Currently, there are two possible states:
-/// 1. inactive: the state where the cursor is not positioned on any node.
-/// 2. positioned on a node: this state includes information about the node the cursor is on,
-/// as well as the offset of the entry that needs to be operated on within the slots of the current node.
+/// A type representing the state of a [`Cursor`] or a [`CursorMut`]. Currently, there are three
+/// possible states:
+///  - `Inactive`: The cursor is not positioned on any node.
+///  - `AtNode`: The cursor is positioned on some node and holds a shared reference to it.
+///  - `AtNodeMut`: The cursor is positioned on some node and holds an exclusive reference to it.
+///
+/// Currently, a cursor never ends up on an interior node. In other words, when methods of `Cursor`
+/// or `CursorMut` finish, the cursor will either not positioned on any node or positioned on some
+/// leaf node.
+///
+/// A `Cursor` manages its state with `CursorState<'a, I, ReadOnly>`, which will never be in the
+/// `AtNodeMut` state. A `Cursor` never attempts to perform modification, so it never holds an
+/// exclusive reference.
+///
+/// On contrast, a `CursorMut` uses `CursorState<'a, I, ReadWrite>` to manage its state, where all
+/// the three states are useful. Due to the COW mechansim, a node can be shared in multiple
+/// `XArray`s. In that case, the `CursorMut` will first enter the `AtNode` state as it cannot hold
+/// an exclusive reference to shared data. Just before performing the modification, it copies the
+/// shared data and creates the exclusive reference, which makes the cursor enter `AtNodeMut`
+/// state.
 enum CursorState<'a, I, O>
 where
     I: ItemEntry,
@@ -175,44 +191,30 @@ impl<'a, I: ItemEntry> CursorState<'a, I, ReadWrite> {
     }
 }
 
-/// A `Cursor` can traverse in the `XArray` and have a target `XEntry` to operate,
-/// which is stored in the `index` of `XArray`. `Cursor` can be only created by an `XArray`,
-/// and will hold its immutable reference, and can only perform read-only operations
-/// for the corresponding `XArray`.
+/// A `Cursor` can traverse in the [`XArray`] by setting or increasing the target index and can
+/// perform read-only operations to the target item represented by the target index.
 ///
-/// When creating a cursor, it will immediately traverses to touch the target XEntry in the XArray.
-/// If the cursor cannot reach to the node that can operate the target XEntry, its state will set to `Inactive`.
-/// A Cursor can reset its target index. Once it do this, it will also immediately traverses to touch the target XEntry.
-/// A Cursor can also perform `next()` to quickly operate the XEntry at the next index.
-/// If the Cursor perform reset or next and then have a target index that is not able to touch,
-/// the Cursor's state will also set to `Inactive`.
+/// `Cursor`s act like shared references, so multiple cursors are allowed to operate on a single
+/// `XArray` at the same time.
 ///
-/// Hence, at any given moment when no operation is being performed, a cursor will be positioned on
-/// the XNode and be ready to operate its target XEntry. If not, it means that the cursor is not able
-/// to touch the target `XEntry`.
-///
-/// The cursor will also record all nodes passed from the head node to the target position in `passed_node`,
-/// thereby assisting it in performing some operations that involve searching upwards.
-///
-/// Multiple Cursors are allowed to operate on a single XArray at the same time.
+/// The typical way to obtain a `Cursor` instance is to call [`XArray::cursor`].
 pub struct Cursor<'a, I, M>
 where
     I: ItemEntry,
     M: Into<XMark>,
 {
-    /// The `XArray` the cursor located in.
+    /// The `XArray` where the cursor locates.
     xa: &'a XArray<I, M>,
-    /// The target index of the cursor in the belonged `XArray`.
+    /// The target index of the cursor.
     index: u64,
-    /// Represents the current state of the cursor.
+    /// The state of the cursor.
     state: CursorState<'a, I, ReadOnly>,
-    /// Record add nodes passed from the head node to the target position.
-    /// The index is the height of the recorded node.
+    /// Ancestors of the leaf node (exclusive), starting from the root node and going down.
     ancestors: SmallVec<[&'a XNode<I>; MAX_HEIGHT]>,
 }
 
 impl<'a, I: ItemEntry, M: Into<XMark>> Cursor<'a, I, M> {
-    /// Create an `Cursor` to perform read related operations on the `XArray`.
+    /// Creates a `Cursor` to perform read-related operations in the `XArray`.
     pub(super) fn new(xa: &'a XArray<I, M>, index: u64) -> Self {
         let mut cursor = Self {
             xa,
@@ -225,8 +227,10 @@ impl<'a, I: ItemEntry, M: Into<XMark>> Cursor<'a, I, M> {
         cursor
     }
 
-    /// Reset the target index of the Cursor. Once set, it will immediately attempt to move the Cursor
-    ///  to touch the target XEntry.
+    /// Resets the target index to `index`.
+    ///
+    /// Once set, the cursor will be positioned on the corresponding leaf node, if the leaf node
+    /// exists.
     pub fn reset_to(&mut self, index: u64) {
         self.reset();
         self.index = index;
@@ -234,14 +238,15 @@ impl<'a, I: ItemEntry, M: Into<XMark>> Cursor<'a, I, M> {
         self.traverse_to_target();
     }
 
-    /// Return the target index of the cursor.
+    /// Returns the target index of the cursor.
     pub fn index(&self) -> u64 {
         self.index
     }
 
-    /// Move the target index of the cursor to index + 1.
-    /// If the target index's corresponding XEntry is not within the current XNode, the cursor will
-    /// move to touch the target XEntry. If the move fails, the cursor's state will be set to `Inactive`.
+    /// Increases the target index of the cursor by one.
+    ///
+    /// Once increased, the cursor will be positioned on the corresponding leaf node, if the leaf
+    /// node exists.
     pub fn next(&mut self) {
         self.index = self.index.checked_add(1).unwrap();
 
@@ -267,10 +272,10 @@ impl<'a, I: ItemEntry, M: Into<XMark>> Cursor<'a, I, M> {
         self.continue_traverse_to_target();
     }
 
-    /// Load the `XEntry` at the current cursor index within the `XArray`.
+    /// Loads the item at the target index.
     ///
-    /// Returns a reference to the `XEntry` at the target index if succeed.
-    /// If the cursor cannot reach to the target index, the method will return `None`.
+    /// If the target item exists, this method will return a [`ItemRef`] that acts exactly like a
+    /// `&'a I` wrapped in `Some(_)`. Otherwises, it will return `None`.
     pub fn load(&mut self) -> Option<ItemRef<'a, I>> {
         self.traverse_to_target();
         self.state
@@ -278,8 +283,9 @@ impl<'a, I: ItemEntry, M: Into<XMark>> Cursor<'a, I, M> {
             .and_then(|(node, off)| node.entry(off).as_item_ref())
     }
 
-    /// Judge if the target item is marked with the input `mark`.
-    /// If target item does not exist, the function will return `None`.
+    /// Checks whether the target item is marked with the input `mark`.
+    ///
+    /// If the target item does not exist, this method will also return false.
     pub fn is_marked(&mut self, mark: M) -> bool {
         self.traverse_to_target();
         self.state
@@ -288,10 +294,10 @@ impl<'a, I: ItemEntry, M: Into<XMark>> Cursor<'a, I, M> {
             .unwrap_or(false)
     }
 
-    /// Traverse the XArray and move to the node that can operate the target entry.
-    /// It then returns the reference to the `XEntry` stored in the slot corresponding to the target index.
-    /// A target operated XEntry must be an item entry.
-    /// If can not touch the target entry, the function will return `None`.
+    /// Traverses from the root node to the leaf node according to the target index, if necessary
+    /// and possible.
+    ///
+    /// This methold should be called before any read-only operations.
     fn traverse_to_target(&mut self) {
         if self.state.is_at_node() {
             return;
@@ -307,6 +313,11 @@ impl<'a, I: ItemEntry, M: Into<XMark>> Cursor<'a, I, M> {
         self.continue_traverse_to_target();
     }
 
+    /// Traverses from an interior node to the leaf node according to the target index, if
+    /// possible.
+    ///
+    /// This is a helper function for internal use. Users should call
+    /// [`Cursor::traverse_to_target`] instead.
     fn continue_traverse_to_target(&mut self) {
         while !self.state.is_leaf() {
             let (current_node, operation_offset) =
@@ -325,13 +336,19 @@ impl<'a, I: ItemEntry, M: Into<XMark>> Cursor<'a, I, M> {
         }
     }
 
-    /// Initialize the Cursor to its initial state.
+    /// Resets the cursor to the inactive state.
     fn reset(&mut self) {
         self.state = CursorState::default();
         self.ancestors.clear();
     }
 }
 
+/// A dormant mutable reference to a value of `XNode<I>`.
+///
+/// While the mutable reference is dormant, a subtree of the node can continue to be operated. When
+/// the operation is finished (i.e., all references to the subtree are dead), `awaken` or
+/// `awaken_modified` (depending on whether the marks on the subtree have been updated) can be
+/// called to restore the original reference to the node.
 struct NodeMutRef<'a, I>
 where
     I: ItemEntry,
@@ -340,75 +357,79 @@ where
 }
 
 impl<'a, I: ItemEntry> NodeMutRef<'a, I> {
+    /// Creates a dormant reference for the given `node` and gets a mutable reference for the
+    /// operation on a subtree of the node (specified in `operation_offset`).
     fn new(node: &'a mut XNode<I>, operation_offset: u8) -> (&'a mut XEntry<I>, NodeMutRef<'a, I>) {
         let (node, inner) = DormantMutRef::new(node);
         (node.entry_mut(operation_offset), NodeMutRef { inner })
     }
 
+    /// Restores the original node reference after the operation on the subtree is finished.
+    ///
+    /// This method does not update the mark corresponding to the subtree, so it should only be
+    /// used when the marks on the subtree are not changed.
+    ///
+    /// # Safety
+    ///
+    /// Users must ensure all references to the subtree are now dead.
     unsafe fn awaken(self) -> &'a mut XNode<I> {
-        self.inner.awaken()
+        // SAFETY: The safety requirements of the method ensure that the original reference and all
+        // its derived references are dead.
+        unsafe { self.inner.awaken() }
     }
 
+    /// Restores the original node reference after the operation on the subtree is finished and
+    /// updates the mark corresponding to the subtree.
+    ///
+    /// The `operation_offset` in [`NodeMutRef::new`] is not stored, so users must call this method
+    /// with the `last_index` to identify the subtree on which the marks are changed.
+    ///
+    /// # Safety
+    ///
+    /// Users must ensure all references to the subtree are now dead.
     unsafe fn awaken_modified(self, last_index: u64) -> (&'a mut XNode<I>, bool) {
+        // SAFETY: The safety requirements of the method ensure that the original reference and all
+        // its derived references are dead.
         let node = unsafe { self.inner.awaken() };
         let changed = node.update_mark(node.height().height_offset(last_index));
         (node, changed)
     }
 }
 
-/// A `CursorMut` can traverse in the `XArray` and have a target `XEntry` to operate,
-/// which is stored in the `index` of `XArray`. `CursorMut` can be only created by an `XArray`,
-/// and will hold its mutable reference, and can perform read and write operations
-/// for the corresponding `XArray`.
+/// A `CursorMut` can traverse in the [`XArray`] by setting or increasing the target index and can
+/// perform read-write operations to the target item represented by the target index.
 ///
-/// When creating a `CursorMut`, it will immediately traverses to touch the target XEntry in the XArray.
-/// If the `CursorMut` cannot reach to the node that can operate the target XEntry,
-/// its state will set to `Inactive`. A `CursorMut` can reset its target index.
-/// Once it do this, it will also immediately traverses to touch the target XEntry.  
-/// A `CursorMut` can also perform `next()` to quickly operate the XEntry at the next index.
-/// If the `CursorMut` perform reset or next and then have a target index that is not able to touch,
-/// the `CursorMut`'s state will also set to `Inactive`.  
+/// `CursorMut`s act like exclusive references, so multiple cursors are not allowed to operate on a
+/// single `XArray` at the same time.
 ///
-/// When CursorMut performs `reset_to()` and `next()` methods and moves its index,
-/// the CursorMut will no longer be exclusive.
+/// The typical way to obtain a `CursorMut` instance is to call [`XArray::cursor_mut`].
 ///
-/// Hence, at any given moment when no operation is being performed, a `CursorMut` will be
-/// positioned on the XNode and be ready to operate its target XEntry. If not, it means that the `CursorMut`
-/// is not able to touch the target `XEntry`. For this situation, the `CursorMut`
-/// can invoke `store` method which will expand the XArray to guarantee to reach the target position.
-///
-/// The `CursorMut` will also record all nodes passed from the head node to the target position
-/// in passed_node, thereby assisting it in performing some operations that involve searching upwards.
-///
-/// **Features for COW (Copy-On-Write).** The CursorMut guarantees that if it is exclusive,
-/// all nodes it traverses during the process are exclusively owned by the current XArray.
-/// If it finds that the node it is about to access is shared with another XArray due to a COW clone,
-/// it will trigger a COW to copy and create an exclusive node for access. Additionally,
-/// since it holds a mutable reference to the current XArray, it will not conflict with
-/// any other cursors on the XArray. CursorMut is set to exclusive when a modification
-/// is about to be performed
-///
-/// When a CursorMut doing write operation on XArray, it should not be affected by other CursorMuts
-/// or affect other Cursors.
+/// **Features for COW (Copy-On-Write).** Due to COW, multiple `XArray`s can share the same piece
+/// of data. As a result, `CursorMut` does not always have exclusive access to the items stored in
+/// the `XArray`. However, just before performing the modification, `CursorMut` will create
+/// exclusive copies by cloning shared items, which guarantees the isolation of data stored in
+/// different `XArray`s.
 pub struct CursorMut<'a, I, M>
 where
     I: ItemEntry,
     M: Into<XMark>,
 {
-    /// The `XArray` the cursor located in.
+    /// The `XArray` where the cursor locates.
     xa: DormantMutRef<'a, XArray<I, M>>,
-    /// The target index of the cursor in the belonged `XArray`.
+    /// The target index of the cursor.
     index: u64,
-    /// Represents the current state of the cursor.
+    /// The state of the cursor.
     state: CursorState<'a, I, ReadWrite>,
-    /// Record add nodes passed from the head node to the target position.
-    /// The index is the height of the recorded node.
+    /// Ancestors of the leaf node (exclusive), starting from the root node and going down, until
+    /// the first node which is shared in multiple `XArray`s.
     mut_ancestors: SmallVec<[NodeMutRef<'a, I>; MAX_HEIGHT]>,
+    /// Ancestors of the leaf node (exclusive), but only containing the nodes which are shared in
+    /// multiple `XArray`s, from the first one and going down.
     ancestors: SmallVec<[&'a XNode<I>; MAX_HEIGHT]>,
 }
 
 impl<'a, I: ItemEntry, M: Into<XMark>> CursorMut<'a, I, M> {
-    /// Create an `CursorMut` to perform read and write operations on the `XArray`.
+    /// Create a `CursorMut` to perform read- and write-related operations in the `XArray`.
     pub(super) fn new(xa: &'a mut XArray<I, M>, index: u64) -> Self {
         let mut cursor = Self {
             xa: DormantMutRef::new(xa).1,
@@ -422,8 +443,10 @@ impl<'a, I: ItemEntry, M: Into<XMark>> CursorMut<'a, I, M> {
         cursor
     }
 
-    /// Reset the target index of the Cursor. Once set, it will immediately attempt to move the
-    /// Cursor to touch the target XEntry.
+    /// Resets the target index to `index`.
+    ///
+    /// Once set, the cursor will be positioned on the corresponding leaf node, if the leaf node
+    /// exists.
     pub fn reset_to(&mut self, index: u64) {
         self.reset();
         self.index = index;
@@ -431,15 +454,15 @@ impl<'a, I: ItemEntry, M: Into<XMark>> CursorMut<'a, I, M> {
         self.traverse_to_target();
     }
 
-    /// Return the target index of the cursor.
+    /// Returns the target index of the cursor.
     pub fn index(&self) -> u64 {
         self.index
     }
 
-    /// Move the target index of the cursor to index + 1.
-    /// If the target index's corresponding XEntry is not within the current XNode, the cursor
-    /// will move to touch the target XEntry. If the move fails, the cursor's state will be
-    /// set to `Inactive`.
+    /// Increases the target index of the cursor by one.
+    ///
+    /// Once increased, the cursor will be positioned on the corresponding leaf node, if the leaf
+    /// node exists.
     pub fn next(&mut self) {
         self.index = self.index.checked_add(1).unwrap();
 
@@ -459,6 +482,8 @@ impl<'a, I: ItemEntry, M: Into<XMark>> CursorMut<'a, I, M> {
             let parent_node = if let Some(node) = self.ancestors.pop() {
                 NodeMaybeMut::Shared(node)
             } else if let Some(node) = self.mut_ancestors.pop() {
+                // SAFETY: All references derived from the tail node in `self.mut_ancestors` live
+                // in `self.ancestors` and `self.state`, which has already been reset.
                 NodeMaybeMut::Exclusive(unsafe { node.awaken_modified(self.index - 1).0 })
             } else {
                 self.reset();
@@ -473,10 +498,10 @@ impl<'a, I: ItemEntry, M: Into<XMark>> CursorMut<'a, I, M> {
         self.continue_traverse_to_target();
     }
 
-    /// Load the `XEntry` at the current cursor index within the `XArray`.
+    /// Loads the item at the target index.
     ///
-    /// Returns a reference to the `XEntry` at the target index if succeed.
-    /// If the cursor cannot reach to the target index, the method will return `None`.
+    /// If the target item exists, this method will return a [`ItemRef`] that acts exactly like a
+    /// `&'_ I` wrapped in `Some(_)`. Otherwises, it will return `None`.
     pub fn load(&mut self) -> Option<ItemRef<'_, I>> {
         self.traverse_to_target();
         self.state
@@ -484,8 +509,9 @@ impl<'a, I: ItemEntry, M: Into<XMark>> CursorMut<'a, I, M> {
             .and_then(|(node, off)| node.entry(off).as_item_ref())
     }
 
-    /// Judge if the target item is marked with the input `mark`.
-    /// If target item does not exist, the function will return `None`.
+    /// Checks whether the target item is marked with the input `mark`.
+    ///
+    /// If the target item does not exist, this method will also return false.
     pub fn is_marked(&mut self, mark: M) -> bool {
         self.traverse_to_target();
         self.state
@@ -494,11 +520,7 @@ impl<'a, I: ItemEntry, M: Into<XMark>> CursorMut<'a, I, M> {
             .unwrap_or(false)
     }
 
-    /// Stores the provided `XEntry` in the `XArray` at the position indicated by the current cursor index.
-    ///
-    /// If the provided entry is the same as the current entry at the cursor position,
-    /// the method returns the provided entry without making changes.
-    /// Otherwise, it replaces the current entry with the provided one and returns the old entry.
+    /// Stores a new `item` at the target index, and returns the old item if it previously exists.
     pub fn store(&mut self, item: I) -> Option<I> {
         self.expand_and_traverse_to_target();
         self.state
@@ -506,10 +528,7 @@ impl<'a, I: ItemEntry, M: Into<XMark>> CursorMut<'a, I, M> {
             .and_then(|(node, off)| node.set_entry(off, XEntry::from_item(item)).into_item())
     }
 
-    /// Removes the `XEntry` at the target index of the 'CursorMut' within the `XArray`.
-    ///
-    /// This is achieved by storing an empty `XEntry` at the target index using the `store` method.
-    /// The method returns the replaced `XEntry` that was previously stored at the target index.
+    /// Removes the item at the target index, and returns the removed item if it previously exists.
     pub fn remove(&mut self) -> Option<I> {
         self.ensure_exclusive_before_modification();
         self.state
@@ -517,12 +536,11 @@ impl<'a, I: ItemEntry, M: Into<XMark>> CursorMut<'a, I, M> {
             .and_then(|(node, off)| node.set_entry(off, XEntry::EMPTY).into_item())
     }
 
-    /// Mark the item at the target index in the `XArray` with the input `mark`.
-    /// If the item does not exist, return an Error.
-    ///
-    /// This operation will also mark all nodes along the path from the head node to the target node
-    /// with the input `mark`, because a marked intermediate node should be equivalent to
-    /// having a child node that is marked.
+    /// Sets the input `mark` for the item at the target index if the target item exists, otherwise
+    /// returns an error.
+    //
+    // The marks on the ancestors of the leaf node also need to be updated, which will be done
+    // later in `NodeMutRef::awaken_modified`.
     pub fn set_mark(&mut self, mark: M) -> Result<(), ()> {
         self.ensure_exclusive_before_modification();
         self.state
@@ -532,11 +550,11 @@ impl<'a, I: ItemEntry, M: Into<XMark>> CursorMut<'a, I, M> {
             .ok_or(())
     }
 
-    /// Unset the input `mark` for the item at the target index in the `XArray`.
-    /// If the item does not exist, return an Error.
-    ///
-    /// This operation will also unset the input `mark` for all nodes along the path from the head node
-    /// to the target node if the input `mark` have not marked any of their children.
+    /// Unsets the input `mark` for the item at the target index if the target item exists,
+    /// otherwise returns an error.
+    //
+    // The marks on the ancestors of the leaf node also need to be updated, which will be done
+    // later in `NodeMutRef::awaken_modified`.
     pub fn unset_mark(&mut self, mark: M) -> Result<(), ()> {
         self.ensure_exclusive_before_modification();
         self.state
@@ -546,15 +564,17 @@ impl<'a, I: ItemEntry, M: Into<XMark>> CursorMut<'a, I, M> {
             .ok_or(())
     }
 
-    /// Traverse the XArray and move to the node that can operate the target entry.
-    /// It then returns the reference to the `XEntry` stored in the slot corresponding to the target index.
-    /// A target operated XEntry must be an item entry.
-    /// If can not touch the target entry, the function will return `None`.
+    /// Traverses from the root node to the leaf node according to the target index, without
+    /// creating new nodes, if necessary and possible.
+    ///
+    /// This method should be called before any read-only operations.
     fn traverse_to_target(&mut self) {
         if self.state.is_at_node() {
             return;
         }
 
+        // SAFETY: The cursor is inactive. There are no alive references derived from the value of
+        // `&mut XArray<I, M>`.
         let xa = unsafe { self.xa.reborrow() };
 
         let max_index = xa.max_index();
@@ -567,14 +587,10 @@ impl<'a, I: ItemEntry, M: Into<XMark>> CursorMut<'a, I, M> {
         self.continue_traverse_to_target();
     }
 
-    /// Traverse the XArray and move to the node that can operate the target entry.
-    /// During the traverse, the cursor may modify the XArray to let itself be able to reach the target node.
+    /// Traverses from the root node to the leaf node according to the target index, potentially
+    /// with creating new nodes, if necessary.
     ///
-    /// Before traverse, the cursor will first expand the height of `XArray` to make sure it have enough capacity.
-    /// During the traverse, the cursor will allocate new `XNode` and put it in the appropriate slot if needed.
-    ///
-    /// It then returns the reference to the `XEntry` stored in the slot corresponding to the target index.
-    /// A target operated XEntry must be an item entry.
+    /// This method should be called before any create-if-not-exist operations.
     fn expand_and_traverse_to_target(&mut self) {
         if self.state.is_at_node() {
             self.ensure_exclusive_before_modification();
@@ -582,6 +598,8 @@ impl<'a, I: ItemEntry, M: Into<XMark>> CursorMut<'a, I, M> {
         }
 
         let head = {
+            // SAFETY: The cursor is inactive. There are no alive references derived from the value
+            // of `&mut XArray<I, M>`.
             let xa = unsafe { self.xa.reborrow() };
             xa.reserve(self.index);
             xa.head_mut().as_node_mut_or_cow().unwrap()
@@ -591,6 +609,9 @@ impl<'a, I: ItemEntry, M: Into<XMark>> CursorMut<'a, I, M> {
         self.exclusively_traverse_to_target();
     }
 
+    /// Ensures the exclusive access to the leaf node by copying data when necessary.
+    ///
+    /// This method should be called before any modify-if-exist operations.
     fn ensure_exclusive_before_modification(&mut self) {
         if self.state.is_at_node_mut() {
             return;
@@ -600,8 +621,12 @@ impl<'a, I: ItemEntry, M: Into<XMark>> CursorMut<'a, I, M> {
         self.ancestors.clear();
 
         let node = match self.mut_ancestors.pop() {
+            // SAFETY: All references derived from the tail node in `self.mut_ancestors` live in
+            // `self.ancestors` and `self.state`, which has already been reset.
             Some(node) => unsafe { node.awaken() },
             None => {
+                // SAFETY: All references derived from `self.xa` live in `self.mut_ancestors`,
+                // `self.ancestors`, and `self.state`. All of them have already been cleared.
                 let xa = unsafe { self.xa.reborrow() };
 
                 let head = xa.head_mut();
@@ -617,6 +642,11 @@ impl<'a, I: ItemEntry, M: Into<XMark>> CursorMut<'a, I, M> {
         self.exclusively_traverse_to_target();
     }
 
+    /// Traverses from an interior node to the leaf node according to the target index, without
+    /// creating new nodes, if possible.
+    ///
+    /// This is a helper function for internal use. Users should call
+    /// [`CursorMut::traverse_to_target`] instead.
     fn continue_traverse_to_target(&mut self) {
         while !self.state.is_leaf() {
             let (current_node, operation_offset) = core::mem::take(&mut self.state)
@@ -652,6 +682,12 @@ impl<'a, I: ItemEntry, M: Into<XMark>> CursorMut<'a, I, M> {
         }
     }
 
+    /// Traverses from an interior node to the leaf node according to the target index, potentially
+    /// with creating new nodes.
+    ///
+    /// This is a helper function for internal use. Users should call
+    /// [`CursorMut::expand_and_traverse_to_target`] or
+    /// [`CursorMut::ensure_exclusive_before_modification`] instead.
     fn exclusively_traverse_to_target(&mut self) {
         while !self.state.is_leaf() {
             let (current_node, operation_offset) =
@@ -671,12 +707,15 @@ impl<'a, I: ItemEntry, M: Into<XMark>> CursorMut<'a, I, M> {
         }
     }
 
-    /// Initialize the Cursor to its initial state.
+    /// Updates marks on ancestors if necessary and resets the cursor to the inactive state.
     fn reset(&mut self) {
         self.state = CursorState::default();
         self.ancestors.clear();
 
         while let Some(node) = self.mut_ancestors.pop() {
+            // SAFETY: All references derived from the node in `self.mut_ancestors` live in the
+            // following part of `self.mut_ancestors`, `self.ancestors`, and `self.state`, which
+            // has already been cleared.
             let (_, changed) = unsafe { node.awaken_modified(self.index) };
             if !changed {
                 self.mut_ancestors.clear();
@@ -688,6 +727,7 @@ impl<'a, I: ItemEntry, M: Into<XMark>> CursorMut<'a, I, M> {
 
 impl<'a, I: ItemEntry, M: Into<XMark>> Drop for CursorMut<'a, I, M> {
     fn drop(&mut self) {
+        // This updates marks on ancestors if necessary.
         self.reset();
     }
 }

@@ -9,7 +9,7 @@
 extern crate alloc;
 
 pub use cursor::{Cursor, CursorMut};
-pub use entry::ItemEntry;
+pub use entry::{ItemEntry, ItemRef};
 pub use mark::XMark;
 pub use range::Range;
 pub use xarray::XArray;

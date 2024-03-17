@@ -6,51 +6,64 @@ use core::ops::{Deref, Not};
 
 use crate::node::{TryClone, XNode};
 
-/// A trait that should be implemented for the types users wish to store in an `XArray`.
-/// Items stored in an XArray are required to be 8 bytes in size, Currently it can be various pointer types.
+/// A trait for the types users wish to store in an `XArray`.
+///
+/// Items stored in an `XArray` must be representable by a `usize` aligned to 4.
 ///
 /// # Safety
-/// Users must ensure that the produced `usize` of `into_raw()` meets the requirements for an item entry
-/// in the XArray. Specifically, if the original type is a pointer, the last two bits should be 00;
-/// if the original type is a value like usize, the last bit should be 1 (TODO).
+///
+/// Users must ensure that `into_raw()` always produce `usize`s that meet the above alignment
+/// requirements.
+///
+/// Users must also ensure that as long as the value does not get dropped (e.g., by making use of
+/// [`core::mem::ManuallyDrop`]), it is legal to invoke [`ItemEntry::from_raw`] multiple times on
+/// the raw `usize` produced by invoking [`ItemEntry::into_raw`] only one time.
 pub unsafe trait ItemEntry {
-    /// Converts the original type into a `usize`, consuming the ownership of the original type.
-    ///
-    /// This `usize` should be directly stored in an XArray's XEntry.
+    /// Converts the original value into a `usize`, consuming the ownership of the original value.
     fn into_raw(self) -> usize;
 
-    /// Recovers the original type from a usize, reclaiming ownership.
+    /// Recovers the original value from a `usize`, reclaiming the ownership of the original value.
     ///
     /// # Safety
-    /// The raw value passed must have been produced by the corresponding `into_raw` method in this trait
-    /// from the same type.
+    ///
+    /// The original value must have not been dropped, and the raw value must be previously
+    /// returned by [`ItemEntry::into_raw`].
     unsafe fn from_raw(raw: usize) -> Self;
 }
 
+// SAFETY: `Arc<T>` meets the safety requirements of `ItemEntry`.
 unsafe impl<T> ItemEntry for Arc<T> {
     fn into_raw(self) -> usize {
         let raw_ptr = Arc::into_raw(self);
-        debug_assert!(raw_ptr.is_aligned_to(4));
         raw_ptr as usize
     }
 
+    // SAFETY: `Arc::<T>::from_raw` and `Arc::<T>::into_raw` meet the safety requirements of
+    // `ItemEntry::from_raw`.
     unsafe fn from_raw(raw: usize) -> Self {
-        unsafe { Arc::from_raw(raw as *mut T) }
+        unsafe { Arc::from_raw(raw as *mut _) }
     }
 }
 
+// SAFETY: `Box<T>` meets the safety requirements of `ItemEntry`.
 unsafe impl<T> ItemEntry for Box<T> {
     fn into_raw(self) -> usize {
-        let raw_ptr = Box::into_raw(self) as *const u8;
-        debug_assert!(raw_ptr.is_aligned_to(4));
+        let raw_ptr = Box::into_raw(self);
         raw_ptr as usize
     }
 
+    // SAFETY: `Box::<T>::from_raw` and `Box::<T>::into_raw` meet the safety requirements of
+    // `ItemEntry::from_raw`.
     unsafe fn from_raw(raw: usize) -> Self {
-        Box::from_raw(raw as *mut _)
+        unsafe { Box::from_raw(raw as *mut _) }
     }
 }
 
+/// A type that behaves exactly the same as `&I`.
+///
+/// This works around some implementation limitations where `&I` must be returned, but it is not
+/// technically possible because the memory bits of the value are complexly encoded. Therefore a
+/// wrapper type that represents `&I` comes to the rescue.
 #[derive(PartialEq, Debug)]
 pub struct ItemRef<'a, I>
 where
@@ -68,18 +81,18 @@ impl<'a, I: ItemEntry> Deref for ItemRef<'a, I> {
     }
 }
 
-/// The type stored in the head of `XArray` and the slots of `XNode`s, which is the basic unit of storage
-/// within an XArray.
+/// A type serving as the basic unit of storage for `XArray`s, used in the head of the `XArray` and
+/// the slots of `XNode`s.
 ///
 /// There are the following types of `XEntry`:
-/// - Internal entries: These are invisible to users and have the last two bits set to 10. Currently `XArray`
-/// only have node entries as internal entries, which are entries that point to XNodes.
-/// - Item entries: Items stored by the user. Currently stored items can only be pointers and the last two bits
-/// of these item entries are 00.
+/// - Internal entries: These are invisible to users and have the last two bits set to 10.
+/// - Item entries: These represent user-given items and have the last two bits set to 00.
 ///
-/// `XEntry` have the ownership. Once it generated from an item or a XNode, the ownership of the item or the XNode
-/// will be transferred to the `XEntry`. If the stored item in the XArray implemented Clone trait, then the XEntry
-/// in the XArray can also implement Clone trait.
+/// An `XEntry` owns the item or node that it represents. Once an `XEntry` generated from an item
+/// or an `XNode`, the ownership of the item or the `XNode` will be transferred to the `XEntry`.
+///
+/// An `XEntry` behaves just like the item or node it represents. Therefore, if the item type `I`
+/// implements the [`Clone`] trait, the `XEntry` will also also implement the [`Clone`] trait.
 #[derive(PartialEq, Eq, Debug)]
 #[repr(transparent)]
 pub(super) struct XEntry<I>
@@ -117,6 +130,9 @@ impl<I: ItemEntry> XEntry<I> {
         _marker: PhantomData,
     };
 
+    // SAFETY: `ptr` must be returned from `Arc::<XNode<I>>::into_raw` or `I::into_raw` and be
+    // consistent with `ty`. In addition, the ownership of the value of `Arc<XNode<I>>` or `I` must
+    // be transferred to the constructed instance of `XEntry`.
     unsafe fn new(ptr: usize, ty: EntryType) -> Self {
         debug_assert!(ptr & Self::TYPE_MASK == 0);
         Self {
@@ -165,6 +181,8 @@ impl<I: ItemEntry> XEntry<I> {
             let arc_node = Arc::new(node);
             Arc::into_raw(arc_node) as usize
         };
+        // SAFETY: `node_ptr` is returned from `Arc::<Node<I>>::into_raw` and the ownership of the
+        // value of `Arc<XNode<I>>` is transferred.
         unsafe { Self::new(node_ptr, EntryType::Node) }
     }
 
@@ -177,15 +195,20 @@ impl<I: ItemEntry> XEntry<I> {
             return None;
         }
 
+        // SAFETY: `self` owns the value of `Arc<XNode<I>>`.
         Some(unsafe { &*(self.ptr() as *const XNode<I>) })
     }
 
     pub fn as_node_maybe_mut(&mut self) -> Option<NodeMaybeMut<'_, I>> {
         match self.node_strong_count() {
             0 => None,
+            // SAFETY: `&mut self` ensures the exclusive access to the value of `Arc<XNode<I>>`,
+            // and `node_strong_count() == 1` ensures the exclusive access to the value of
+            // `XNode<I>`.
             1 => Some(NodeMaybeMut::Exclusive(unsafe {
                 &mut *(self.ptr() as *mut _)
             })),
+            // SAFETY: `self` owns the value of `Arc<XNode<I>>`.
             _ => Some(NodeMaybeMut::Shared(unsafe { &*(self.ptr() as *const _) })),
         }
     }
@@ -193,14 +216,19 @@ impl<I: ItemEntry> XEntry<I> {
     pub fn as_node_mut_or_cow(&mut self) -> Option<&mut XNode<I>> {
         match self.node_strong_count() {
             0 => return None,
+            // SAFETY: `&mut self` ensures the exclusive access to the value of `Arc<XNode<I>>`,
+            // and `node_strong_count() == 1` ensures the exclusive access to the value of
+            // `XNode<I>`.
             1 => return Some(unsafe { &mut *(self.ptr() as *mut _) }),
             _ => (),
         }
 
+        // SAFETY: `self` owns the value of `Arc<XNode<I>>`.
         let node = unsafe { &*(self.ptr() as *const XNode<I>) };
         let new_node = node.try_clone().unwrap();
 
         *self = Self::from_node(new_node);
+        // SAFETY: `node_strong_count() == 1` now holds.
         Some(unsafe { &mut *(self.ptr() as *mut XNode<I>) })
     }
 
@@ -209,6 +237,8 @@ impl<I: ItemEntry> XEntry<I> {
             return 0;
         }
 
+        // SAFETY: `self` owns the value of `Arc<XNode<I>>` and the constructed instance of
+        // `Arc<XNode<I>>` will not be dropped.
         let node = unsafe { ManuallyDrop::new(Arc::from_raw(self.ptr() as *const XNode<I>)) };
         Arc::strong_count(&*node)
     }
@@ -217,6 +247,8 @@ impl<I: ItemEntry> XEntry<I> {
 impl<I: ItemEntry> XEntry<I> {
     pub fn from_item(item: I) -> Self {
         let item_ptr = I::into_raw(item) as usize;
+        // SAFETY: `item_ptr` is returned from `I::from_raw` and the ownership of the value of `I`
+        // is transferred.
         unsafe { Self::new(item_ptr, EntryType::Item) }
     }
 
@@ -232,6 +264,7 @@ impl<I: ItemEntry> XEntry<I> {
         let ptr = self.ptr();
         core::mem::forget(self);
 
+        // SAFETY: `self` owns the value of `I`.
         Some(unsafe { I::from_raw(ptr) })
     }
 
@@ -242,6 +275,8 @@ impl<I: ItemEntry> XEntry<I> {
 
         let ptr = self.ptr();
 
+        // SAFETY: `self` owns the value of `I`, the constructed instance of `I` will not be
+        // dropped, and `ItemRef` only allows shared access to the instance.
         Some(ItemRef {
             item: unsafe { ManuallyDrop::new(I::from_raw(ptr)) },
             _marker: PhantomData,
@@ -253,9 +288,11 @@ impl<I: ItemEntry> Drop for XEntry<I> {
     fn drop(&mut self) {
         match self.ty() {
             None => (),
+            // SAFETY: `self` owns the value of `I`.
             Some(EntryType::Item) => unsafe {
                 I::from_raw(self.ptr());
             },
+            // SAFETY: `self` owns the value of `Arc<XNode<I>>`.
             Some(EntryType::Node) => unsafe {
                 Arc::from_raw(self.ptr() as *const XNode<I>);
             },
@@ -267,10 +304,14 @@ impl<I: ItemEntry + Clone> Clone for XEntry<I> {
     fn clone(&self) -> Self {
         match self.ty() {
             None => Self::EMPTY,
+            // SAFETY: `self` owns the value of `I`, the constructed instance of `I` will not be
+            // dropped, and `clone()` only takes a shared reference to the instance.
             Some(EntryType::Item) => unsafe {
                 let item_entry = ManuallyDrop::new(I::from_raw(self.ptr()));
                 Self::from_item((*item_entry).clone())
             },
+            // SAFETY: `self` owns the value of `Arc<XNode<T>>`, and `Arc` can be cloned by
+            // increasing its strong count.
             Some(EntryType::Node) => unsafe {
                 Arc::increment_strong_count(self.ptr() as *const XNode<I>);
                 Self {

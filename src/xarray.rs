@@ -12,30 +12,30 @@ pub(super) const SLOT_SIZE: usize = 1 << BITS_PER_LAYER;
 pub(super) const SLOT_MASK: usize = SLOT_SIZE - 1;
 pub(super) const MAX_HEIGHT: usize = 64 / BITS_PER_LAYER + 1;
 
-/// `XArray` is an abstract data type functioning like an expansive array of items
-/// where each item must be an 8-byte object, such as `Arc<T>` or `Box<T>`.
-/// User-stored pointers must have a minimum alignment of 4 bytes.
-/// `XArray` facilitates efficient sequential access to adjacent entries,
-/// supporting multiple concurrent reads and exclusively allowing one write operation at a time.
+/// `XArray` is an abstract data type functioning like an expansive array of items where each item
+/// must be an 8-byte object, such as `Arc<T>` or `Box<T>`.
+///
+/// User-stored pointers must have a minimum alignment of 4 bytes. `XArray` facilitates efficient
+/// sequential access to adjacent entries, supporting multiple concurrent reads and exclusively
+/// allowing one write operation at a time.
 ///
 /// # Features
-/// **Copy-on-write (COW):** If items within `XArray` implement the `Clone` trait,
-/// cloning can leverage a COW mechanism. A clone of an `XArray` initially shares the
-/// head node with the original, avoiding immediate deep copying. If a mutable operation
-/// is required on either `XArray`, a deep copy of the relevant `XNode` is made first,
-/// ensuring isolated operations.
+/// **Copy-on-write (COW):** If items within `XArray` implement the `Clone` trait, cloning can
+/// leverage a COW mechanism. A clone of an `XArray` initially shares the head node with the
+/// original, avoiding immediate deep copying. If a mutable operation is required on either
+/// `XArray`, a deep copy of the relevant nodes is made first, ensuring isolated operations.
 ///
-/// **Cursors:** Interaction with `XArray` is mediated through `Cursor` and `CursorMut`.
-/// A `Cursor` requires an immutable reference, while `CursorMut` requires a mutable reference.
-/// As such, multiple `Cursor` instances can coexist, but `CursorMut` operations are singular,
-/// reflecting the behavior of shared (`&`) and exclusive (`&mut`) references.
-/// Cursors offer precise index positioning and traversal capabilities in the `XArray`.
+/// **Cursors:** Interaction with `XArray` is mediated through [`Cursor`] and [`CursorMut`]. A
+/// `Cursor` requires an immutable reference, while `CursorMut` requires a mutable reference. As
+/// such, multiple `Cursor` instances can coexist, but `CursorMut` operations are singular,
+/// reflecting the behavior of shared (`&`) and exclusive (`&mut`) references. Cursors offer
+/// precise index positioning and traversal capabilities in the `XArray`.
 ///
-/// **Marking:** `XArray` enables marking of individual items or the `XArray` itself for user convenience.
-/// Items and the `XArray` can have up to three distinct marks by default, with each mark independently maintained.
-/// Users can use self-defined types as marks by implementing the `From<Type>` trait for XMark.
-/// Marking is also applicable to internal nodes, indicating marked descendant nodes,
-/// though such marking is not transparent to users.
+/// **Marking:** `XArray` enables marking of individual items or the `XArray` itself for user
+/// convenience. Items and the `XArray` can have up to three distinct marks by default, with each
+/// mark independently maintained. Users can use self-defined types as marks by implementing the
+/// `From<Type>` trait for [`XMark`]. Marking is also applicable to internal nodes, indicating
+/// marked descendant nodes, though such marking is not transparent to users.
 ///
 /// # Example
 ///
@@ -58,8 +58,8 @@ pub(super) const MAX_HEIGHT: usize = 64 / BITS_PER_LAYER + 1;
 /// assert!(*xarray_clone.load(10).unwrap().as_ref() == 100);
 /// ```
 ///
-/// The concepts XArray are originally introduced by Linux, which keeps the data structure of
-/// Linux's radix tree [Linux Radix Trees](https://lwn.net/Articles/175432/).
+/// The XArray concept was originally introduced by Linux, which keeps the data structure of [Linux
+/// Radix Trees](https://lwn.net/Articles/175432/).
 pub struct XArray<I, M = NoneMark>
 where
     I: ItemEntry,
@@ -71,7 +71,7 @@ where
 }
 
 impl<I: ItemEntry, M: Into<XMark>> XArray<I, M> {
-    /// Make a new, empty XArray.
+    /// Makes a new, empty `XArray`.
     pub const fn new() -> Self {
         Self {
             marks: [false; 3],
@@ -80,30 +80,32 @@ impl<I: ItemEntry, M: Into<XMark>> XArray<I, M> {
         }
     }
 
-    /// Mark the `XArray` with the input `mark`.
+    /// Marks the `XArray` with the input `mark`.
     pub fn set_mark(&mut self, mark: M) {
         self.marks[mark.into().index()] = true;
     }
 
-    /// Unset the input `mark` for the `XArray`.
+    /// Unsets the input `mark` for the `XArray`.
     pub fn unset_mark(&mut self, mark: M) {
         self.marks[mark.into().index()] = false;
     }
 
-    /// Judge if the `XArray` is marked with the input `mark`.
+    /// Checks whether the `XArray` is marked with the input `mark`.
     pub fn is_marked(&self, mark: M) -> bool {
         self.marks[mark.into().index()]
     }
 
-    /// Return a reference to the head entry, and later will not modify the XNode pointed to by the `head`.
+    /// Returns a shared reference to the head `XEntry`.
     pub(super) fn head(&self) -> &XEntry<I> {
         &self.head
     }
 
+    /// Returns an exclusive reference to the head `XEntry`.
     pub(super) fn head_mut(&mut self) -> &mut XEntry<I> {
         &mut self.head
     }
 
+    /// Increases the height of the `XArray` so that the `index`-th element can be stored.
     pub(super) fn reserve(&mut self, index: u64) {
         if self.head.is_null() {
             let height = Height::from_index(index);
@@ -127,7 +129,8 @@ impl<I: ItemEntry, M: Into<XMark>> XArray<I, M> {
         }
     }
 
-    /// Calculate the max index that can stored in the XArray with current height.
+    /// Calculates the maximum index of elements that can be stored with the current height of the
+    /// `XArray`.
     pub(super) fn max_index(&self) -> u64 {
         self.head()
             .as_node_ref()
@@ -135,21 +138,23 @@ impl<I: ItemEntry, M: Into<XMark>> XArray<I, M> {
             .unwrap_or(0)
     }
 
-    /// Attempts to load the item at the target index within the `XArray`.
-    /// If the target item exists, return it with `Some`, Otherwise, return `None`.
+    /// Loads the `index`-th item.
+    ///
+    /// If the target item exists, it will be returned with `Some(_)`, otherwise, `None` will be
+    /// returned.
     pub fn load(&self, index: u64) -> Option<ItemRef<'_, I>> {
         let mut cursor = self.cursor(index);
         cursor.load()
     }
 
-    /// Stores the provided item in the `XArray` at the target index,
-    /// and return the old item if it was previously stored in target index.
+    /// Stores the provided item in the `XArray` at the target index, and returns the old item if
+    /// some item was previously stored in the same position.
     pub fn store(&mut self, index: u64, item: I) -> Option<I> {
         let mut cursor = self.cursor_mut(index);
         cursor.store(item)
     }
 
-    /// Unset the input `mark` for all of the items in the `XArray`.
+    /// Unsets the input `mark` for all of the items in the `XArray`.
     pub fn unset_mark_all(&mut self, mark: M) {
         let mut pending_nodes = VecDeque::new();
 
@@ -172,25 +177,25 @@ impl<I: ItemEntry, M: Into<XMark>> XArray<I, M> {
         }
     }
 
-    /// Removes the `XEntry` at the target index within the `XArray`,
-    /// and return the removed item if it was previously stored in target index.
+    /// Removes the `XEntry` in the `XArray` at the target index, and returns the removed item if
+    /// some item was previously stored in the same position.
     pub fn remove(&mut self, index: u64) -> Option<I> {
         let mut cursor = self.cursor_mut(index);
         cursor.remove()
     }
 
-    /// Create an `Cursor` to perform read related operations on the `XArray`.
+    /// Creates a [`Cursor`] to perform read-related operations in the `XArray`.
     pub fn cursor(&self, index: u64) -> Cursor<'_, I, M> {
         Cursor::new(self, index)
     }
 
-    /// Create an `CursorMut` to perform read and write operations on the `XArray`.
+    /// Creates a [`CursorMut`] to perform read- and write-related operations in the `XArray`.
     pub fn cursor_mut(&mut self, index: u64) -> CursorMut<'_, I, M> {
         CursorMut::new(self, index)
     }
 
-    /// Create a `Range` which can be immutably iterated over the index corresponding to the `range`
-    /// in `XArray`.
+    /// Creates a [`Range`] which can be immutably iterated over the indexes corresponding to the
+    /// specified `range`.
     pub fn range(&self, range: core::ops::Range<u64>) -> Range<'_, I, M> {
         let cursor = Cursor::new(self, range.start);
         Range::new(cursor, range.end)
@@ -198,7 +203,7 @@ impl<I: ItemEntry, M: Into<XMark>> XArray<I, M> {
 }
 
 impl<I: ItemEntry + Clone, M: Into<XMark>> Clone for XArray<I, M> {
-    /// Clone with COW mechanism.
+    /// Clones the `XArray` with the COW mechanism.
     fn clone(&self) -> Self {
         let cloned_head = self.head.clone();
         Self {
