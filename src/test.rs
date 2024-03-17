@@ -5,17 +5,14 @@ use std::sync::Arc;
 extern crate test;
 use test::Bencher;
 
-fn init_continuous_with_arc<M: Into<XMark>>(
-    xarray: &mut XArray<Arc<i32>, StdMutex, M>,
-    item_num: i32,
-) {
+fn init_continuous_with_arc<M: Into<XMark>>(xarray: &mut XArray<Arc<i32>, M>, item_num: i32) {
     for i in 0..item_num {
         let value = Arc::new(i);
         xarray.store(i as u64, value);
     }
 }
 
-fn init_sparse_with_arc<M: Into<XMark>>(xarray: &mut XArray<Arc<i32>, StdMutex, M>, item_num: i32) {
+fn init_sparse_with_arc<M: Into<XMark>>(xarray: &mut XArray<Arc<i32>, M>, item_num: i32) {
     for i in 0..2 * item_num {
         if i % 2 == 0 {
             let value = Arc::new(i);
@@ -135,7 +132,7 @@ fn test_cursor_store_sparse() {
 
 #[test]
 fn test_set_mark() {
-    let mut xarray_arc: XArray<Arc<i32>, StdMutex, XMark> = XArray::new();
+    let mut xarray_arc: XArray<Arc<i32>, XMark> = XArray::new();
     init_continuous_with_arc(&mut xarray_arc, 10000);
 
     let mut cursor = xarray_arc.cursor_mut(1000);
@@ -164,7 +161,7 @@ fn test_set_mark() {
 
 #[test]
 fn test_unset_mark() {
-    let mut xarray_arc: XArray<Arc<i32>, StdMutex, XMark> = XArray::new();
+    let mut xarray_arc: XArray<Arc<i32>, XMark> = XArray::new();
     init_continuous_with_arc(&mut xarray_arc, 10000);
 
     let mut cursor = xarray_arc.cursor_mut(1000);
@@ -182,7 +179,7 @@ fn test_unset_mark() {
 
 #[test]
 fn test_mark_overflow() {
-    let mut xarray_arc: XArray<Arc<i32>, StdMutex, XMark> = XArray::new();
+    let mut xarray_arc: XArray<Arc<i32>, XMark> = XArray::new();
     init_continuous_with_arc(&mut xarray_arc, 10000);
 
     let mut cursor = xarray_arc.cursor_mut(20000);
@@ -192,7 +189,7 @@ fn test_mark_overflow() {
 
 #[test]
 fn test_unset_mark_all() {
-    let mut xarray_arc: XArray<Arc<i32>, StdMutex, XMark> = XArray::new();
+    let mut xarray_arc: XArray<Arc<i32>, XMark> = XArray::new();
     init_continuous_with_arc(&mut xarray_arc, 10000);
     xarray_arc.cursor_mut(2000).set_mark(XMark::Mark1);
     xarray_arc.cursor_mut(2000).set_mark(XMark::Mark2);
@@ -300,7 +297,7 @@ fn test_cow_after_cow() {
 
 #[test]
 fn test_cow_mark() {
-    let mut xarray_arc: XArray<Arc<i32>, StdMutex, XMark> = XArray::new();
+    let mut xarray_arc: XArray<Arc<i32>, XMark> = XArray::new();
     for i in 1..10000 {
         let value = Arc::new(i * 2);
         xarray_arc.store(i as u64, value);

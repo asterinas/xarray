@@ -21,6 +21,20 @@ impl Mark {
         self.inner &= !(1 << offset as u64);
     }
 
+    pub fn update(&mut self, offset: u8, set: bool) -> bool {
+        let mut new_inner = self.inner;
+        if set {
+            new_inner |= 1 << offset as u64;
+        } else {
+            new_inner &= !(1 << offset as u64);
+        }
+
+        let changed = new_inner != self.inner;
+        self.inner = new_inner;
+
+        changed
+    }
+
     pub fn clear(&mut self) {
         self.inner = 0
     }
@@ -43,6 +57,8 @@ pub enum XMark {
     Mark1,
     Mark2,
 }
+
+pub const NUM_MARKS: usize = 3;
 
 impl XMark {
     /// Map the XMark to an index in the range 0 to 2.

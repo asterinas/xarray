@@ -10,18 +10,13 @@ extern crate alloc;
 
 pub use cursor::{Cursor, CursorMut};
 pub use entry::ItemEntry;
-pub use lock::{MutexLock, XLock};
 pub use mark::XMark;
 pub use range::Range;
 pub use xarray::XArray;
 
-#[cfg(feature = "std")]
-pub use lock::std_specific::*;
-
-mod cow;
+mod borrow;
 mod cursor;
 mod entry;
-mod lock;
 mod mark;
 mod node;
 mod range;
