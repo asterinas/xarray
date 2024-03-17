@@ -2,8 +2,12 @@ use crate::cursor::Cursor;
 use crate::entry::{ItemEntry, ItemRef};
 use crate::mark::XMark;
 
-/// An iterator over a sub-range of entries in a XArray.
-/// This struct is created by the `range()` method on `XArray`.
+/// An iterator over a range of entries in an [`XArray`].
+///
+/// The typical way to obtain a `Range` instance is to call [`XArray::range`].
+///
+/// [`XArray`]: crate::XArray
+/// [`XArray::range`]: crate::XArray::range
 pub struct Range<'a, I, M>
 where
     I: ItemEntry,

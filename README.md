@@ -8,7 +8,7 @@ supporting multiple concurrent reads and exclusively allowing one write operatio
 
 - **Cursors:** Provide cursors for precise and efficient iteration over the array. Cursors have both immutable and mutable versions. One can hold multiple immutable cursors or hold a mutable cursor exclusively at a time. 
 - **Marking:** Provide ability to mark entries and the XArray itself for easy state tracking.
-- **Generics:** Generic implementation that can work with any entry type and any inner locks that fits the use case.
+- **Generics:** Generic implementation that can work with any entry type that fits the use case.
 - **Copy-on-Write (COW):** Efficient cloning of XArrays with shared structure until mutation.
 
 ## Installation
@@ -67,34 +67,6 @@ for i in 0..10000 {
     cursor.next();
 }
 ```
-
-### Specify inner Locks
-Here is an example of declaring a SpinLock in your own project library as an inner lock for an xarray:
-```rust
-    use crate::{SpinLock, SpinLockGuard};
-
-    impl<T> MutexLock<T> for SpinLock<T> {
-        type Target<'a> = SpinLockGuard<'a, T>
-        where T: 'a;
-
-        fn new(inner: T) -> Self {
-            SpinLock::new(inner)
-        }
-
-        fn lock(&self) -> Self::Target<'_> {
-            self.lock().unwrap()
-        }
-    }
-
-    abstract_lock_to!(SpinLock, MySpinLock);
-
-    let mut xarray_arc: XArray<Arc<i32>, MySpinLock> = XArray::new();
-    
-```
-
-- Here `MySpinLock` is a HKT(Higher-Kind Type) abstraction for `crate::SpinLock`. 
-- The real lock type that be abstracted should implement `MutexLock` trait. 
-- This crate has abstracted `std::sync::Mutex` to `StdMutex` and set it as the default inner lock for std users.
 
 ### Using Marks
 

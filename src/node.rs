@@ -5,11 +5,11 @@ use crate::entry::{ItemEntry, XEntry};
 use crate::mark::{Mark, NUM_MARKS};
 use crate::xarray::{BITS_PER_LAYER, SLOT_MASK, SLOT_SIZE};
 
-/// The height of an XNode within an XArray.
+/// The height of an `XNode` within an `XArray`.
 ///
-/// In an XArray, the head has the highest height, while the XNodes that directly store items are at the lowest height,
-/// with a height value of 1. Each level up from the bottom height increases the height number by 1.
-/// The height of an XArray is the height of its head.
+/// In an `XArray`, the head has the highest height, while the `XNode`s that directly store items
+/// are at the lowest height, with a height value of 1. Each level up from the bottom height
+/// increases the height number by 1. The height of an `XArray` is the height of its head.
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Copy, Clone)]
 pub(super) struct Height {
     height: u8,
@@ -42,10 +42,13 @@ impl PartialOrd<u8> for Height {
 }
 
 impl Height {
+    /// Creates a `Height` directly from a height value.
     pub fn new(height: u8) -> Self {
         Self { height }
     }
 
+    /// Creates a `Height` which has the mininal height value but allows the `index`-th item to be
+    /// stored.
     pub fn from_index(index: u64) -> Self {
         let mut height = Height::new(1);
         while index > height.max_index() {
@@ -54,10 +57,12 @@ impl Height {
         height
     }
 
+    /// Goes up, which increases the height velue by one.
     pub fn go_root(&self) -> Self {
         Self::new(self.height + 1)
     }
 
+    /// Goes down, which decreases the height value by one.
     pub fn go_leaf(&self) -> Self {
         Self::new(self.height - 1)
     }
@@ -66,25 +71,23 @@ impl Height {
         (self.height - 1) * BITS_PER_LAYER as u8
     }
 
-    /// Calculate the corresponding offset for the target index at the current height.
+    /// Calculates the corresponding offset for the target index at the current height.
     pub fn height_offset(&self, index: u64) -> u8 {
         ((index >> self.height_shift()) & SLOT_MASK as u64) as u8
     }
 
-    /// Calculate the maximum index that can be represented in XArray at the current height.
+    /// Calculates the maximum index that can be represented in an `XArray` with the current
+    /// height.
     pub fn max_index(&self) -> u64 {
         ((SLOT_SIZE as u64) << self.height_shift()) - 1
     }
 }
 
-/// `XNode` is the intermediate node in the tree-like structure of XArray.
+/// The `XNode` is the intermediate node in the tree-like structure of the `XArray`.
 ///
-/// It contains `SLOT_SIZE` number of XEntries, meaning it can accommodate up to `SLOT_SIZE` child nodes.
-/// The 'height' and 'offset_in_parent' attributes of an XNode are determined at initialization and remain unchanged thereafter.
-///
-/// XNode has a generic parameter called 'Operation', which has two possible instances: `ReadOnly` and `ReadWrite`.
-/// These instances indicate whether the XNode will only perform read operations or both read and write operations
-/// (where write operations imply potential modifications to the contents of slots).
+/// It contains `SLOT_SIZE` number of `XEntry`s, meaning it can accommodate up to `SLOT_SIZE` child
+/// nodes. The `height` and `offset_in_parent` attributes of an `XNode` are determined at
+/// initialization and remain unchanged thereafter.
 #[derive(Clone, Debug)]
 pub(super) struct XNode<I>
 where
@@ -94,9 +97,17 @@ where
     /// which stores the user-given items, is 1.
     height: Height,
     /// This node is its parent's `offset_in_parent`-th child.
-    /// This field is meaningless if this node is the root (will be 0).
+    ///
+    /// This field will be zero if this node is the root, as the node will be the 0-th child of its
+    /// parent once the height of `XArray` is increased.
     offset_in_parent: u8,
+    /// The slots storing `XEntry`s, which point to user-given items for leaf nodes and other
+    /// `XNode`s for interior nodes.
     slots: [XEntry<I>; SLOT_SIZE],
+    /// The marks representing whether each slot is marked or not.
+    ///
+    /// Users can set mark or unset mark on user-given items, and a leaf node or an interior node
+    /// is marked if and only if there is at least one marked item within the node.
     marks: [Mark; NUM_MARKS],
 }
 
@@ -114,7 +125,7 @@ impl<I: ItemEntry> XNode<I> {
         }
     }
 
-    /// Get the offset in the slots of the current XNode corresponding to the XEntry for the target index.
+    /// Get the slot offset at the current `XNode` for the target index `target_index`.
     pub fn entry_offset(&self, target_index: u64) -> u8 {
         self.height.height_offset(target_index)
     }
@@ -155,6 +166,15 @@ impl<I: ItemEntry> XNode<I> {
         self.height == 1
     }
 
+    /// Sets the slot at the given `offset` to the given `entry`.
+    ///
+    /// If `entry` represents an item, the old marks at the same offset will be cleared. Otherwise,
+    /// if `entry` represents a node, the marks at the same offset will be updated according to
+    /// whether the new node contains marked items.
+    ///
+    /// This method changes the mark _only_ on this `XNode'. It's the caller's responsibility to
+    /// ensure that the marks on the ancestors of this `XNode' are up to date. See also
+    /// [`XNode::update_mark`].
     pub fn set_entry(&mut self, offset: u8, entry: XEntry<I>) -> XEntry<I> {
         let is_new_node = entry.is_node();
 
@@ -171,10 +191,20 @@ impl<I: ItemEntry> XNode<I> {
         old_entry
     }
 
+    /// Sets the input `mark` at the given `offset`.
+    ///
+    /// This method changes the mark _only_ on this `XNode'. It's the caller's responsibility to
+    /// ensure that the marks on the ancestors of this `XNode' are up to date. See also
+    /// [`XNode::update_mark`].
     pub fn set_mark(&mut self, offset: u8, mark: usize) {
         self.marks[mark].set(offset);
     }
 
+    /// Unsets the input `mark` at the given `offset`.
+    ///
+    /// This method changes the mark _only_ on this `XNode'. It's the caller's responsibility to
+    /// ensure that the marks on the ancestors of this `XNode' are up to date. See also
+    /// [`XNode::update_mark`].
     pub fn unset_mark(&mut self, offset: u8, mark: usize) {
         self.marks[mark].unset(offset);
     }
@@ -183,6 +213,15 @@ impl<I: ItemEntry> XNode<I> {
         self.marks[mark].clear();
     }
 
+    /// Updates the mark at the given `offset` and returns `true` if the mark is changed.
+    ///
+    /// This method does nothing if the slot at the given `offset` does not represent a node. It
+    /// assumes the marks of the child node are up to date, and ensures the mark at the given
+    /// `offset` is also up to date.
+    ///
+    /// Whenever a mark at the leaf node changes, this method should be invoked from the leaf node
+    /// up to the root node, until the mark does not change on some node or the root node has been
+    /// reached.
     pub fn update_mark(&mut self, offset: u8) -> bool {
         let Some(node) = self.slots[offset as usize].as_node_ref() else {
             return false;
