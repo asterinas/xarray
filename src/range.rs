@@ -1,28 +1,25 @@
 use crate::cursor::Cursor;
 use crate::entry::{ItemEntry, ItemRef};
-use crate::lock::XLock;
 use crate::mark::XMark;
 
 /// An iterator over a sub-range of entries in a XArray.
 /// This struct is created by the `range()` method on `XArray`.
-pub struct Range<'a, I, L, M>
+pub struct Range<'a, I, M>
 where
     I: ItemEntry,
-    L: XLock,
     M: Into<XMark>,
 {
-    cursor: Cursor<'a, I, L, M>,
-    start: u64,
+    cursor: Cursor<'a, I, M>,
     end: u64,
 }
 
-impl<'a, I: ItemEntry, L: XLock, M: Into<XMark>> Range<'a, I, L, M> {
-    pub(super) fn new(cursor: Cursor<'a, I, L, M>, start: u64, end: u64) -> Self {
-        Range { cursor, start, end }
+impl<'a, I: ItemEntry, M: Into<XMark>> Range<'a, I, M> {
+    pub(super) fn new(cursor: Cursor<'a, I, M>, end: u64) -> Self {
+        Range { cursor, end }
     }
 }
 
-impl<'a, I: ItemEntry, L: XLock, M: Into<XMark>> core::iter::Iterator for Range<'a, I, L, M> {
+impl<'a, I: ItemEntry, M: Into<XMark>> core::iter::Iterator for Range<'a, I, M> {
     type Item = (u64, ItemRef<'a, I>);
 
     fn next(&mut self) -> Option<Self::Item> {
