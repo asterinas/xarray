@@ -91,6 +91,20 @@ fn test_cursor_load() {
 }
 
 #[test]
+fn test_cursor_load_very_sparse() {
+    let mut xarray_arc: XArray<Arc<i32>> = XArray::new();
+    xarray_arc.store(0, Arc::new(1));
+    xarray_arc.store(10000, Arc::new(2));
+
+    let mut cursor = xarray_arc.cursor(0);
+    assert_eq!(*cursor.load().unwrap().as_ref(), 1);
+    for _ in 0..10000 {
+        cursor.next();
+    }
+    assert_eq!(*cursor.load().unwrap().as_ref(), 2);
+}
+
+#[test]
 fn test_cursor_store_continuous() {
     let mut xarray_arc: XArray<Arc<i32>> = XArray::new();
     let mut cursor = xarray_arc.cursor_mut(0);
@@ -152,11 +166,11 @@ fn test_set_mark() {
     cursor.reset_to(3000);
     let value3_mark1 = cursor.is_marked(XMark::Mark1);
 
-    assert!(value1_mark0 == true);
-    assert!(value1_mark1 == true);
-    assert!(value2_mark0 == false);
-    assert!(value2_mark1 == true);
-    assert!(value3_mark1 == false);
+    assert_eq!(value1_mark0, true);
+    assert_eq!(value1_mark1, true);
+    assert_eq!(value2_mark0, false);
+    assert_eq!(value2_mark1, true);
+    assert_eq!(value3_mark1, false);
 }
 
 #[test]
@@ -173,8 +187,8 @@ fn test_unset_mark() {
 
     let value1_mark0 = cursor.is_marked(XMark::Mark0);
     let value1_mark2 = cursor.is_marked(XMark::Mark2);
-    assert!(value1_mark0 == false);
-    assert!(value1_mark2 == false);
+    assert_eq!(value1_mark0, false);
+    assert_eq!(value1_mark2, false);
 }
 
 #[test]
@@ -183,17 +197,17 @@ fn test_mark_overflow() {
     init_continuous_with_arc(&mut xarray_arc, 10000);
 
     let mut cursor = xarray_arc.cursor_mut(20000);
-    assert!(Err(()) == cursor.set_mark(XMark::Mark1));
-    assert!(false == cursor.is_marked(XMark::Mark1));
+    assert_eq!(Err(()), cursor.set_mark(XMark::Mark1));
+    assert_eq!(false, cursor.is_marked(XMark::Mark1));
 }
 
 #[test]
 fn test_unset_mark_all() {
     let mut xarray_arc: XArray<Arc<i32>, XMark> = XArray::new();
     init_continuous_with_arc(&mut xarray_arc, 10000);
-    xarray_arc.cursor_mut(2000).set_mark(XMark::Mark1);
-    xarray_arc.cursor_mut(2000).set_mark(XMark::Mark2);
-    xarray_arc.cursor_mut(200).set_mark(XMark::Mark1);
+    xarray_arc.cursor_mut(2000).set_mark(XMark::Mark1).unwrap();
+    xarray_arc.cursor_mut(2000).set_mark(XMark::Mark2).unwrap();
+    xarray_arc.cursor_mut(200).set_mark(XMark::Mark1).unwrap();
     xarray_arc.unset_mark_all(XMark::Mark1);
 
     assert_eq!(xarray_arc.cursor(2000).is_marked(XMark::Mark1), false);
@@ -248,17 +262,20 @@ fn test_cow() {
         let value_origin = xarray_arc.load(i).unwrap();
         let value_clone = xarray_clone.load(i).unwrap();
         if i % 2 == 0 {
-            assert!(value_origin.raw as u64 == i * 6);
-            assert!(value_clone.raw as u64 == i * 2);
+            assert_eq!(value_origin.raw as u64, i * 6);
+            assert_eq!(value_clone.raw as u64, i * 2);
         } else {
-            assert!(value_origin.raw as u64 == i * 2);
-            assert!(value_clone.raw as u64 == i * 8);
+            assert_eq!(value_origin.raw as u64, i * 2);
+            assert_eq!(value_clone.raw as u64, i * 8);
         }
     }
     drop(xarray_arc);
     drop(xarray_clone);
     // Check drop times.
-    assert!(INIT_TIMES.load(Ordering::Relaxed) == DROP_TIMES.load(Ordering::Relaxed));
+    assert_eq!(
+        INIT_TIMES.load(Ordering::Relaxed),
+        DROP_TIMES.load(Ordering::Relaxed)
+    );
 }
 
 #[test]
@@ -284,15 +301,15 @@ fn test_cow_after_cow() {
     let xarray_cow1_cow = xarray_cow1.clone();
     let xarray_cow2_cow = xarray_cow2.clone();
 
-    assert!(*xarray_cow1_cow.load(2000).unwrap().as_ref() == 2000 * 2);
-    assert!(*xarray_cow1_cow.load(5100).unwrap().as_ref() == 5100 * 3);
-    assert!(*xarray_cow1_cow.load(6100).unwrap().as_ref() == 6100 * 3);
-    assert!(*xarray_cow1_cow.load(7100).unwrap().as_ref() == 7100 * 2);
+    assert_eq!(*xarray_cow1_cow.load(2000).unwrap().as_ref(), 2000 * 2);
+    assert_eq!(*xarray_cow1_cow.load(5100).unwrap().as_ref(), 5100 * 3);
+    assert_eq!(*xarray_cow1_cow.load(6100).unwrap().as_ref(), 6100 * 3);
+    assert_eq!(*xarray_cow1_cow.load(7100).unwrap().as_ref(), 7100 * 2);
 
-    assert!(*xarray_cow2_cow.load(2000).unwrap().as_ref() == 2000 * 2);
-    assert!(*xarray_cow2_cow.load(5100).unwrap().as_ref() == 5100 * 2);
-    assert!(*xarray_cow2_cow.load(6100).unwrap().as_ref() == 6100 * 4);
-    assert!(*xarray_cow2_cow.load(7100).unwrap().as_ref() == 7100 * 4);
+    assert_eq!(*xarray_cow2_cow.load(2000).unwrap().as_ref(), 2000 * 2);
+    assert_eq!(*xarray_cow2_cow.load(5100).unwrap().as_ref(), 5100 * 2);
+    assert_eq!(*xarray_cow2_cow.load(6100).unwrap().as_ref(), 6100 * 4);
+    assert_eq!(*xarray_cow2_cow.load(7100).unwrap().as_ref(), 7100 * 4);
 }
 
 #[test]
@@ -325,14 +342,14 @@ fn test_cow_mark() {
     let mark1_1000_clone = xarray_clone.cursor(1000).is_marked(XMark::Mark1);
     let mark0_3000_clone = xarray_clone.cursor(3000).is_marked(XMark::Mark0);
 
-    assert!(mark0_1000_arc == true);
-    assert!(mark0_2000_arc == true);
-    assert!(mark1_1000_arc == false);
-    assert!(mark0_1000_clone == false);
-    assert!(mark0_2000_clone == false);
-    assert!(mark1_1000_clone == true);
-    assert!(mark0_3000_arc == true);
-    assert!(mark0_3000_clone == false);
+    assert_eq!(mark0_1000_arc, true);
+    assert_eq!(mark0_2000_arc, true);
+    assert_eq!(mark1_1000_arc, false);
+    assert_eq!(mark0_1000_clone, false);
+    assert_eq!(mark0_2000_clone, false);
+    assert_eq!(mark1_1000_clone, true);
+    assert_eq!(mark0_3000_arc, true);
+    assert_eq!(mark0_3000_clone, false);
 }
 
 #[test]
@@ -348,8 +365,9 @@ fn test_cow_cursor() {
     let mut cursor_arc = xarray_arc.cursor_mut(1);
     // Use cursor to read xarray_clone;
     while cursor_clone.index() < 10000 {
+        let index = cursor_clone.index();
         let item = cursor_clone.load().unwrap();
-        assert!(*item.as_ref() == cursor_clone.index() * 2);
+        assert_eq!(*item.as_ref(), index * 2);
         cursor_clone.next();
     }
 
@@ -358,14 +376,15 @@ fn test_cow_cursor() {
     while cursor_clone.index() < 10000 {
         let value = Arc::new(cursor_clone.index());
         let item = cursor_clone.store(value).unwrap();
-        assert!(*item.as_ref() == cursor_clone.index() * 2);
+        assert_eq!(*item.as_ref(), cursor_clone.index() * 2);
         cursor_clone.next();
     }
 
     // Use cursor to read xarray_arc;
     while cursor_arc.index() < 10000 {
+        let index = cursor_arc.index();
         let item = cursor_arc.load().unwrap();
-        assert!(*item.as_ref() == cursor_arc.index() * 2);
+        assert_eq!(*item.as_ref(), index * 2);
         cursor_arc.next();
     }
 
@@ -374,7 +393,7 @@ fn test_cow_cursor() {
     while cursor_arc.index() < 10000 {
         let value = Arc::new(cursor_arc.index() * 3);
         let item = cursor_arc.store(value).unwrap();
-        assert!(*item.as_ref() == cursor_arc.index() * 2);
+        assert_eq!(*item.as_ref(), cursor_arc.index() * 2);
         cursor_arc.next();
     }
 
@@ -382,10 +401,12 @@ fn test_cow_cursor() {
     cursor_arc.reset_to(1);
     cursor_clone.reset_to(1);
     while cursor_arc.index() < 10000 {
+        let index_arc = cursor_arc.index();
+        let index_clone = cursor_clone.index();
         let item_arc = cursor_arc.load().unwrap();
         let item_clone = cursor_clone.load().unwrap();
-        assert!(*item_arc.as_ref() == cursor_arc.index() * 3);
-        assert!(*item_clone.as_ref() == cursor_clone.index());
+        assert_eq!(*item_arc.as_ref(), index_arc * 3);
+        assert_eq!(*item_clone.as_ref(), index_clone);
         cursor_arc.next();
         cursor_clone.next();
     }
@@ -401,10 +422,10 @@ fn test_range() {
 
     let mut count = 0;
     for (index, item) in xarray_arc.range(1000..2000) {
-        assert!(*item.as_ref() as u64 == index);
+        assert_eq!(*item.as_ref() as u64, index);
         count += 1;
     }
-    assert!(count == 500);
+    assert_eq!(count, 500);
 }
 
 #[bench]
