@@ -2,8 +2,8 @@ use core::marker::PhantomData;
 
 use smallvec::SmallVec;
 
-use crate::borrow::DormantMutRef;
-use crate::entry::{ItemEntry, ItemRef, NodeMaybeMut, XEntry};
+use crate::borrow::{DestroyableMutRef, DestroyableRef, DormantMutRef};
+use crate::entry::{ItemEntry, NodeMaybeMut, XEntry};
 use crate::mark::XMark;
 use crate::node::XNode;
 use crate::xarray::{XArray, MAX_HEIGHT, SLOT_SIZE};
@@ -43,11 +43,11 @@ where
 {
     Inactive(PhantomData<O>),
     AtNode {
-        node: &'a XNode<I>,
+        node: DestroyableRef<'a, XNode<I>>,
         operation_offset: u8,
     },
     AtNodeMut {
-        node: &'a mut XNode<I>,
+        node: DestroyableMutRef<'a, XNode<I>>,
         operation_offset: u8,
     },
 }
@@ -62,7 +62,7 @@ impl<'a, I: ItemEntry, O: Operation> CursorState<'a, I, O> {
     fn move_to(&mut self, node: &'a XNode<I>, index: u64) {
         let operation_offset = node.entry_offset(index);
         *self = Self::AtNode {
-            node,
+            node: DestroyableRef::new(node),
             operation_offset,
         };
     }
@@ -72,7 +72,7 @@ impl<'a, I: ItemEntry> CursorState<'a, I, ReadWrite> {
     fn move_to_mut(&mut self, node: &'a mut XNode<I>, index: u64) {
         let operation_offset = node.entry_offset(index);
         *self = Self::AtNodeMut {
-            node,
+            node: DestroyableMutRef::new(node),
             operation_offset,
         };
     }
@@ -91,11 +91,11 @@ impl<'a, I: ItemEntry, O: Operation> CursorState<'a, I, O> {
             Self::AtNode {
                 node,
                 operation_offset,
-            } => Some((node, operation_offset)),
+            } => Some((node.borrow(), operation_offset)),
             Self::AtNodeMut {
                 node,
                 operation_offset,
-            } => Some((node, operation_offset)),
+            } => Some((node.into(), operation_offset)),
             Self::Inactive(..) => None,
         }
     }
@@ -107,7 +107,7 @@ impl<'a, I: ItemEntry> CursorState<'a, I, ReadWrite> {
             Self::AtNodeMut {
                 node,
                 operation_offset,
-            } => Some((node, operation_offset)),
+            } => Some((node.into(), operation_offset)),
             Self::Inactive(..) | Self::AtNode { .. } => None,
         }
     }
@@ -117,11 +117,11 @@ impl<'a, I: ItemEntry> CursorState<'a, I, ReadWrite> {
             Self::AtNode {
                 node,
                 operation_offset,
-            } => Some((NodeMaybeMut::Shared(node), operation_offset)),
+            } => Some((NodeMaybeMut::Shared(node.borrow()), operation_offset)),
             Self::AtNodeMut {
                 node,
                 operation_offset,
-            } => Some((NodeMaybeMut::Exclusive(node), operation_offset)),
+            } => Some((NodeMaybeMut::Exclusive(node.into()), operation_offset)),
             Self::Inactive(..) => None,
         }
     }
@@ -133,7 +133,7 @@ impl<'a, I: ItemEntry> CursorState<'a, I, ReadOnly> {
             Self::AtNode {
                 node,
                 operation_offset,
-            } => Some((*node, *operation_offset)),
+            } => Some((node.borrow(), *operation_offset)),
             Self::Inactive(..) | Self::AtNodeMut { .. } => None,
         }
     }
@@ -145,11 +145,11 @@ impl<'a, I: ItemEntry> CursorState<'a, I, ReadWrite> {
             Self::AtNode {
                 node,
                 operation_offset,
-            } => Some((*node, *operation_offset)),
+            } => Some((node.borrow(), *operation_offset)),
             Self::AtNodeMut {
                 node,
                 operation_offset,
-            } => Some((*node, *operation_offset)),
+            } => Some((node.borrow(), *operation_offset)),
             Self::Inactive(..) => None,
         }
     }
@@ -159,7 +159,7 @@ impl<'a, I: ItemEntry> CursorState<'a, I, ReadWrite> {
             Self::AtNodeMut {
                 node,
                 operation_offset,
-            } => Some((*node, *operation_offset)),
+            } => Some((node.borrow_mut(), *operation_offset)),
             Self::Inactive(..) | Self::AtNode { .. } => None,
         }
     }
@@ -175,8 +175,8 @@ impl<'a, I: ItemEntry, O: Operation> CursorState<'a, I, O> {
 
     fn is_leaf(&self) -> bool {
         match self {
-            Self::AtNodeMut { node, .. } => node.is_leaf(),
-            Self::AtNode { node, .. } => node.is_leaf(),
+            Self::AtNodeMut { node, .. } => node.borrow().is_leaf(),
+            Self::AtNode { node, .. } => node.borrow().is_leaf(),
             Self::Inactive(..) => false,
         }
     }
@@ -274,9 +274,9 @@ impl<'a, I: ItemEntry, M: Into<XMark>> Cursor<'a, I, M> {
 
     /// Loads the item at the target index.
     ///
-    /// If the target item exists, this method will return a [`ItemRef`] that acts exactly like a
-    /// `&'a I` wrapped in `Some(_)`. Otherwises, it will return `None`.
-    pub fn load(&mut self) -> Option<ItemRef<'a, I>> {
+    /// If the target item exists, this method will return a [`ItemEntry::Ref`] that acts exactly
+    /// like a `&'a I` wrapped in `Some(_)`. Otherwises, it will return `None`.
+    pub fn load(&mut self) -> Option<I::Ref<'a>> {
         self.traverse_to_target();
         self.state
             .as_node()
@@ -500,9 +500,9 @@ impl<'a, I: ItemEntry, M: Into<XMark>> CursorMut<'a, I, M> {
 
     /// Loads the item at the target index.
     ///
-    /// If the target item exists, this method will return a [`ItemRef`] that acts exactly like a
-    /// `&'_ I` wrapped in `Some(_)`. Otherwises, it will return `None`.
-    pub fn load(&mut self) -> Option<ItemRef<'_, I>> {
+    /// If the target item exists, this method will return a [`ItemEntry::Ref`] that acts exactly
+    /// like a `&'_ I` wrapped in `Some(_)`. Otherwises, it will return `None`.
+    pub fn load(&mut self) -> Option<I::Ref<'_>> {
         self.traverse_to_target();
         self.state
             .as_node()

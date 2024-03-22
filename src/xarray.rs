@@ -2,7 +2,7 @@ use alloc::collections::VecDeque;
 use core::marker::PhantomData;
 
 use crate::cursor::{Cursor, CursorMut};
-use crate::entry::{ItemEntry, ItemRef, XEntry};
+use crate::entry::{ItemEntry, XEntry};
 use crate::mark::{NoneMark, XMark};
 use crate::node::{Height, XNode};
 use crate::range::Range;
@@ -142,7 +142,7 @@ impl<I: ItemEntry, M: Into<XMark>> XArray<I, M> {
     ///
     /// If the target item exists, it will be returned with `Some(_)`, otherwise, `None` will be
     /// returned.
-    pub fn load(&self, index: u64) -> Option<ItemRef<'_, I>> {
+    pub fn load(&self, index: u64) -> Option<I::Ref<'_>> {
         let mut cursor = self.cursor(index);
         cursor.load()
     }
