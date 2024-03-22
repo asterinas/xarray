@@ -1,5 +1,5 @@
 use crate::cursor::Cursor;
-use crate::entry::{ItemEntry, ItemRef};
+use crate::entry::ItemEntry;
 use crate::mark::XMark;
 
 /// An iterator over a range of entries in an [`XArray`].
@@ -24,7 +24,7 @@ impl<'a, I: ItemEntry, M: Into<XMark>> Range<'a, I, M> {
 }
 
 impl<'a, I: ItemEntry, M: Into<XMark>> core::iter::Iterator for Range<'a, I, M> {
-    type Item = (u64, ItemRef<'a, I>);
+    type Item = (u64, I::Ref<'a>);
 
     fn next(&mut self) -> Option<Self::Item> {
         loop {

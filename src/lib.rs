@@ -1,15 +1,13 @@
 #![no_std]
 #![allow(incomplete_features)]
-#![feature(pointer_is_aligned)]
 #![feature(specialization)]
-#![feature(associated_type_defaults)]
-#![feature(never_type)]
+#![feature(strict_provenance)]
 #![feature(test)]
 
 extern crate alloc;
 
 pub use cursor::{Cursor, CursorMut};
-pub use entry::{ItemEntry, ItemRef};
+pub use entry::{ArcRef, BoxRef, ItemEntry};
 pub use mark::XMark;
 pub use range::Range;
 pub use xarray::XArray;
