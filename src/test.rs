@@ -2,6 +2,7 @@ extern crate std;
 use crate::*;
 use std::boxed::Box;
 use std::sync::Arc;
+use std::thread;
 
 extern crate test;
 use test::Bencher;
@@ -479,6 +480,53 @@ fn test_range() {
         count += 1;
     }
     assert_eq!(count, n!(5));
+}
+
+#[test]
+fn test_threads() {
+    let mut xarray_arc: XArray<Arc<i32>> = XArray::new();
+    xarray_arc.store(2, Arc::new(3));
+
+    thread::scope(|scope| {
+        scope.spawn(|| {
+            assert_eq!(xarray_arc.load(1), None);
+            assert_eq!(*xarray_arc.load(2).unwrap().as_ref(), 3);
+        });
+        scope.spawn(|| {
+            assert_eq!(*xarray_arc.load(2).unwrap().as_ref(), 3);
+            assert_eq!(xarray_arc.load(1), None);
+        });
+    });
+
+    thread::spawn(move || {
+        assert_eq!(*xarray_arc.load(2).unwrap().as_ref(), 3);
+    })
+    .join()
+    .unwrap();
+}
+
+#[test]
+fn test_cursor_threads() {
+    let mut xarray_arc: XArray<Arc<i32>> = XArray::new();
+    xarray_arc.store(2, Arc::new(3));
+
+    let cursor = xarray_arc.cursor(2);
+    thread::scope(|scope| {
+        scope.spawn(|| {
+            assert_eq!(cursor.index(), 2);
+        });
+        scope.spawn(|| {
+            assert_eq!(cursor.index(), 2);
+        });
+    });
+    drop(cursor);
+
+    thread::scope(|scope| {
+        let cursor = xarray_arc.cursor(3);
+        scope.spawn(move || {
+            assert_eq!(cursor.index(), 3);
+        });
+    });
 }
 
 #[bench]
