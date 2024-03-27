@@ -10,6 +10,10 @@ pub(super) struct DormantMutRef<'a, T> {
     _marker: PhantomData<&'a mut T>,
 }
 
+// SAFETY: `DormantMutRef<'a, T>` represents a value of `&'a mut T`.
+unsafe impl<'a, T> Send for DormantMutRef<'a, T> where &'a mut T: Send {}
+unsafe impl<'a, T> Sync for DormantMutRef<'a, T> where &'a mut T: Sync {}
+
 impl<'a, T> DormantMutRef<'a, T> {
     /// Creates a dormant mutable reference and returns both the original reference and the dormant
     /// reference, so that the original reference can continue to be used.
@@ -75,6 +79,10 @@ pub(super) struct DestroyableRef<'a, T> {
     _marker: PhantomData<&'a T>,
 }
 
+// SAFETY: `DestroyableRef<'a, T>` represents a value of `&'a T`.
+unsafe impl<'a, T> Send for DestroyableRef<'a, T> where &'a T: Send {}
+unsafe impl<'a, T> Sync for DestroyableRef<'a, T> where &'a T: Sync {}
+
 impl<'a, T> DestroyableRef<'a, T> {
     /// Creates a destroyable reference from an immutable reference.
     pub fn new(val: &'a T) -> Self {
@@ -98,6 +106,10 @@ pub(super) struct DestroyableMutRef<'a, T> {
     ptr: NonNull<T>,
     _marker: PhantomData<&'a mut T>,
 }
+
+// SAFETY: `DestroyableMutRef<'a, T>` represents a value of `&'a mut T`.
+unsafe impl<'a, T> Send for DestroyableMutRef<'a, T> where &'a mut T: Send {}
+unsafe impl<'a, T> Sync for DestroyableMutRef<'a, T> where &'a mut T: Sync {}
 
 impl<'a, T> DestroyableMutRef<'a, T> {
     /// Creates a destroyable reference from an immutable reference.

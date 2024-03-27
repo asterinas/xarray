@@ -164,6 +164,10 @@ where
     _marker: core::marker::PhantomData<(Arc<XNode<I>>, I)>,
 }
 
+// SAFETY: `XEntry<I>` represents a value of either `Arc<XNode<I>>` or `I`.
+unsafe impl<I: ItemEntry> Send for XEntry<I> where (Arc<XNode<I>>, I): Send {}
+unsafe impl<I: ItemEntry> Sync for XEntry<I> where (Arc<XNode<I>>, I): Sync {}
+
 #[derive(PartialEq, Eq, Debug)]
 #[repr(usize)]
 enum EntryType {
