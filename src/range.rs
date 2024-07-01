@@ -1,6 +1,6 @@
 use crate::cursor::Cursor;
 use crate::entry::ItemEntry;
-use crate::mark::XMark;
+use crate::mark::{NoneMark, XMark};
 
 /// An iterator over a range of entries in an [`XArray`].
 ///
@@ -8,7 +8,7 @@ use crate::mark::XMark;
 ///
 /// [`XArray`]: crate::XArray
 /// [`XArray::range`]: crate::XArray::range
-pub struct Range<'a, I, M>
+pub struct Range<'a, I, M = NoneMark>
 where
     I: ItemEntry,
     M: Into<XMark>,
