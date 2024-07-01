@@ -4,7 +4,7 @@ use smallvec::SmallVec;
 
 use crate::borrow::{DestroyableMutRef, DestroyableRef, DormantMutRef};
 use crate::entry::{ItemEntry, NodeMaybeMut, XEntry};
-use crate::mark::XMark;
+use crate::mark::{NoneMark, XMark};
 use crate::node::XNode;
 use crate::xarray::{XArray, MAX_HEIGHT, SLOT_SIZE};
 
@@ -198,7 +198,7 @@ impl<'a, I: ItemEntry> CursorState<'a, I, ReadWrite> {
 /// `XArray` at the same time.
 ///
 /// The typical way to obtain a `Cursor` instance is to call [`XArray::cursor`].
-pub struct Cursor<'a, I, M>
+pub struct Cursor<'a, I, M = NoneMark>
 where
     I: ItemEntry,
     M: Into<XMark>,
@@ -409,7 +409,7 @@ impl<'a, I: ItemEntry> NodeMutRef<'a, I> {
 /// the `XArray`. However, just before performing the modification, `CursorMut` will create
 /// exclusive copies by cloning shared items, which guarantees the isolation of data stored in
 /// different `XArray`s.
-pub struct CursorMut<'a, I, M>
+pub struct CursorMut<'a, I, M = NoneMark>
 where
     I: ItemEntry,
     M: Into<XMark>,
