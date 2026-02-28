@@ -1,4 +1,6 @@
 use core::cmp::Ordering;
+#[cfg(feature = "slab-friendly")]
+use core::convert::TryInto;
 use core::ops::{Deref, DerefMut};
 
 use crate::entry::{ItemEntry, XEntry};
@@ -103,7 +105,10 @@ where
     offset_in_parent: u8,
     /// The slots storing `XEntry`s, which point to user-given items for leaf nodes and other
     /// `XNode`s for interior nodes.
+    #[cfg(not(feature = "slab-friendly"))]
     slots: [XEntry<I>; SLOT_SIZE],
+    #[cfg(feature = "slab-friendly")]
+    slots: alloc::boxed::Box<[XEntry<I>; SLOT_SIZE]>,
     /// The marks representing whether each slot is marked or not.
     ///
     /// Users can set mark or unset mark on user-given items, and a leaf node or an interior node
@@ -112,6 +117,16 @@ where
 }
 
 impl<I: ItemEntry> XNode<I> {
+    #[cfg(feature = "slab-friendly")]
+    fn empty_slots() -> alloc::boxed::Box<[XEntry<I>; SLOT_SIZE]> {
+        let mut slots = alloc::vec::Vec::with_capacity(SLOT_SIZE);
+        slots.resize_with(SLOT_SIZE, || XEntry::EMPTY);
+        match slots.into_boxed_slice().try_into() {
+            Ok(slots) => slots,
+            Err(_) => panic!("xarray: invalid slab-friendly slot length"),
+        }
+    }
+
     pub fn new_root(height: Height) -> Self {
         Self::new(height, 0)
     }
@@ -120,7 +135,10 @@ impl<I: ItemEntry> XNode<I> {
         Self {
             height,
             offset_in_parent: offset,
+            #[cfg(not(feature = "slab-friendly"))]
             slots: [XEntry::EMPTY; SLOT_SIZE],
+            #[cfg(feature = "slab-friendly")]
+            slots: Self::empty_slots(),
             marks: [Mark::EMPTY; NUM_MARKS],
         }
     }
@@ -147,7 +165,10 @@ impl<I: ItemEntry> XNode<I> {
     }
 
     pub fn entries_mut(&mut self) -> &mut [XEntry<I>] {
-        &mut self.slots
+        #[cfg(not(feature = "slab-friendly"))]
+        return &mut self.slots;
+        #[cfg(feature = "slab-friendly")]
+        return self.slots.as_mut();
     }
 
     pub fn is_marked(&self, offset: u8, mark: usize) -> bool {

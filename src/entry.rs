@@ -2,7 +2,7 @@ use alloc::boxed::Box;
 use alloc::sync::Arc;
 use core::marker::PhantomData;
 use core::mem::ManuallyDrop;
-use core::ops::{Deref, Not};
+use core::ops::Deref;
 
 use crate::node::{TryClone, XNode};
 
@@ -67,7 +67,10 @@ impl<'a, T> Deref for ArcRef<'a, T> {
 
 // SAFETY: `Arc<T>` meets the safety requirements of `ItemEntry`.
 unsafe impl<T> ItemEntry for Arc<T> {
-    type Ref<'a> = ArcRef<'a, T> where Self: 'a;
+    type Ref<'a>
+        = ArcRef<'a, T>
+    where
+        Self: 'a;
 
     fn into_raw(self) -> *const () {
         // A contant expression, so compilers should be smart enough to optimize it away.
@@ -118,7 +121,10 @@ impl<'a, T> Deref for BoxRef<'a, T> {
 
 // SAFETY: `Box<T>` meets the safety requirements of `ItemEntry`.
 unsafe impl<T> ItemEntry for Box<T> {
-    type Ref<'a> = BoxRef<'a, T> where Self: 'a;
+    type Ref<'a>
+        = BoxRef<'a, T>
+    where
+        Self: 'a;
 
     fn into_raw(self) -> *const () {
         // A contant expression, so compilers should be smart enough to optimize it away.
@@ -214,9 +220,16 @@ impl<I: ItemEntry> XEntry<I> {
     }
 
     fn ty(&self) -> Option<EntryType> {
-        self.is_null()
-            .not()
-            .then(|| (self.raw.addr() & Self::TYPE_MASK).try_into().unwrap())
+        if self.is_null() {
+            return None;
+        }
+
+        let raw = self.raw.addr();
+        let tag = raw & Self::TYPE_MASK;
+        match tag.try_into() {
+            Ok(ty) => Some(ty),
+            Err(()) => panic!("xarray: invalid XEntry tag={tag:#x}, raw={raw:#x}"),
+        }
     }
 
     pub fn is_null(&self) -> bool {

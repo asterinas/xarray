@@ -74,6 +74,54 @@ fn test_store_overwrite() {
     assert_eq!(*v.as_ref(), 40);
 }
 
+#[cfg(feature = "slab-friendly")]
+#[test]
+fn test_slab_friendly_store_overwrite_remove() {
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    struct Token(u32);
+
+    let mut xa: XArray<Arc<Token>> = XArray::new();
+    let shared = Arc::new(Token(7));
+
+    for i in 1..n!(256) {
+        xa.store(i as u64, shared.clone());
+    }
+    for i in 1..n!(256) {
+        assert_eq!(xa.load(i as u64).as_deref(), Some(&shared));
+    }
+
+    for i in 1..n!(256) {
+        xa.store(i as u64, Arc::new(Token((i % 251) as u32)));
+    }
+    for i in 1..n!(256) {
+        assert_eq!(xa.load(i as u64).unwrap().0, (i % 251) as u32);
+    }
+
+    for i in 1..n!(256) {
+        assert!(xa.remove(i as u64).is_some());
+        assert!(xa.load(i as u64).is_none());
+    }
+}
+
+#[cfg(feature = "slab-friendly")]
+#[test]
+fn test_slab_friendly_cow_overwrite() {
+    let mut xa: XArray<Arc<u64>> = XArray::new();
+    for i in 1..n!(128) {
+        xa.store(i as u64, Arc::new(i));
+    }
+
+    let mut cloned = xa.clone();
+    for i in 1..n!(128) {
+        cloned.store(i as u64, Arc::new(i * 3));
+    }
+
+    for i in 1..n!(128) {
+        assert_eq!(*xa.load(i as u64).unwrap().as_ref(), i);
+        assert_eq!(*cloned.load(i as u64).unwrap().as_ref(), i * 3);
+    }
+}
+
 #[test]
 fn test_remove() {
     let mut xarray_arc: XArray<Arc<i32>> = XArray::new();
